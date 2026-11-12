@@ -40,6 +40,7 @@ The browser-to-server trust assumption matters: a compromised host could serve a
 
 - Encrypt patient records, source files, and share bundles client-side before persistent server storage; use TLS for transport.
 - Follow the key hierarchy and direct AES-256-GCM, per-grant 2-of-2 XOR share design in [the security architecture](./labtrail_security_architecture_updated_section_7_5.md). Use established cryptographic APIs; do not invent or implement primitives.
+- Use Argon2id for the human-chosen login passphrase. The opt-in 24-word recovery phrase encodes a generated 256-bit secret, so derive its recovery key with HKDF-SHA-256 and purpose-specific versioned `info`; store only the AES-GCM-wrapped PMK and nonce in Z3. The recovery phrase/key never leaves the client. Recovery ciphertext and nonce must both be present exactly when recovery is configured.
 - Keep recipient share material in the URL fragment, not HTTP requests. Treat the full link as sensitive: the fragment may be visible to email clients, browser history, or page scripts. Link possession alone is not authorization; require the specified clinician verification and per-session second factor.
 - Keep share scope on the patient client and inside the encrypted bundle. Send only required authorization, expiry, ciphertext, and server-share metadata to Z3.
 - Enforce expiry at `expires_at`. After an accepted revocation request, all gateways must deny further server access within five seconds; if current grant status cannot be verified, fail closed. Active-viewer closure is best effort.

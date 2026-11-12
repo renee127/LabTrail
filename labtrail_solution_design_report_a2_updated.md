@@ -222,9 +222,12 @@ Figure 4 presents the domain model governing encrypted patient records, candidat
 classDiagram
     class PatientAccount {
         +UUID patient_id
-        +Bytes pmk_salt
-        +Bytes wrapped_pmk_recovery
+        +Bytes login_kdf_salt
+        +Bytes wrapped_pmk_login
+        +Bytes pmk_login_nonce
         +Boolean recovery_configured
+        +Bytes? wrapped_pmk_recovery
+        +Bytes? pmk_recovery_nonce
         +Timestamp created_at
     }
 
@@ -658,9 +661,9 @@ This section specifies the exact cryptographic protocol, trust assumptions, revo
 
 #### 7.5.1 Patient Vault Key Hierarchy (`PMK` & Opt-In Recovery)
 
-1. **Patient Master Key (`PMK`):** Upon account creation in `Z1`, `CMP-01` generates a 256-bit `PMK` using the Web Crypto CSPRNG (`crypto.getRandomValues`). For normal login, `PMK` is wrapped using a Key Encryption Key (`KEK`) derived from the patient's passphrase via **Argon2id** (minimum $64\text{ MiB}$ memory, 3 iterations, 128-bit random salt) bound to WebAuthn/MFA session credentials.
+1. **Patient Master Key (`PMK`):** Upon account creation in `Z1`, `CMP-01` generates a 256-bit `PMK` using the Web Crypto CSPRNG (`crypto.getRandomValues`). For normal login, `PMK` is wrapped using a Key Encryption Key (`KEK`) derived from the patient's passphrase via **Argon2id** (minimum $64\text{ MiB}$ memory, 3 iterations, 128-bit random salt) bound to WebAuthn/MFA session credentials. The client retains the wrapped PMK, its fresh AES-GCM nonce, and `login_kdf_salt`; the passphrase and plaintext keys never leave `Z1`.
 2. **Per-Record Data Encryption Keys (`DEK`):** Each uploaded source artifact (`SourceReport`) and encrypted record partition is encrypted client-side using **AES-256-GCM** with a fresh 256-bit `DEK` and a fresh 96-bit nonce (`IV`), with the `DEK` wrapped under `PMK`.
-3. **Opt-In Recovery Phrase (`FR-23` / `OQ-08`):** When the patient enables recovery, `CMP-01` encodes a 256-bit recovery secret into a **24-word BIP-39 mnemonic phrase** offline in `Z1`, derives a Recovery Key (`RK`) via HKDF-SHA-256, stores `AES-256-GCM(RK, PMK)` as `wrapped_pmk_recovery` in `Z3`, and zeroizes the mnemonic from memory once the patient completes a 3-word verification check. The server never possesses `PMK` or `RK`.
+3. **Opt-In Recovery Phrase (`FR-23` / `OQ-08`):** When the patient enables recovery, `CMP-01` generates a uniformly random 256-bit recovery secret and encodes it as a **24-word BIP-39 mnemonic phrase** in `Z1`. During recovery, the client validates and decodes the phrase, then derives a 256-bit Recovery Key (`RK`) via HKDF-SHA-256 using the RFC 5869 default 32-zero-byte salt and UTF-8 `info` equal to `LabTrail/PMK-recovery/v1:<canonical-lowercase-hyphenated-patient-UUID>`. Argon2id remains for the human-chosen passphrase; it is not needed to slow guessing of this machine-generated high-entropy secret. The client wraps `PMK` with AES-256-GCM using a fresh 96-bit nonce and canonical AAD bound to the patient account, key purpose, and protocol version. `Z3` stores only the encrypted `wrapped_pmk_recovery` and its nonce, enabling recovery on a fresh browser without giving the server the mnemonic, `RK`, or plaintext `PMK`. The client best-effort clears application-managed mnemonic buffers after the patient completes a 3-word verification check; browser runtimes may retain copies. `recovery_configured` must be true exactly when both recovery ciphertext and nonce are present.
 
 #### 7.5.2 Split-Key Share Encryption Protocol (2-of-2 XOR + Direct AES-256-GCM)
 

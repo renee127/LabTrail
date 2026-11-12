@@ -11,10 +11,23 @@ class PatientAccount:
     """Owns a patient's record and client-side key and recovery setup."""
 
     patient_id: UUID
-    pmk_salt: bytes
-    wrapped_pmk_recovery: bytes
+    login_kdf_salt: bytes
+    wrapped_pmk_login: bytes
+    pmk_login_nonce: bytes
     recovery_configured: bool
     created_at: datetime
+    wrapped_pmk_recovery: bytes | None = None
+    pmk_recovery_nonce: bytes | None = None
+
+    def __post_init__(self) -> None:
+        has_recovery_wrapper = self.wrapped_pmk_recovery is not None
+        has_recovery_nonce = self.pmk_recovery_nonce is not None
+        if has_recovery_wrapper != has_recovery_nonce:
+            raise ValueError("Recovery wrapper and nonce must be present together.")
+        if self.recovery_configured != has_recovery_wrapper:
+            raise ValueError(
+                "Recovery wrapper and nonce must be present exactly when recovery is configured."
+            )
 
 
 @dataclass

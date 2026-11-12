@@ -22,9 +22,12 @@ classDiagram
 
     class PatientAccount {
         +UUID patient_id
-        +Bytes pmk_salt
-        +Bytes wrapped_pmk_recovery
+        +Bytes login_kdf_salt
+        +Bytes wrapped_pmk_login
+        +Bytes pmk_login_nonce
         +Boolean recovery_configured
+        +Bytes? wrapped_pmk_recovery
+        +Bytes? pmk_recovery_nonce
         +Timestamp created_at
     }
 
@@ -156,6 +159,7 @@ classDiagram
 ## Modeling notes
 
 - The first four noun candidates map to `PatientAccount`, `SourceReport`, the `CandidateExtraction`/`AcceptedObservation` pair, and the `ClientShareGrant`/`GrantRecord` pair.
+- `PatientAccount` stores only the passphrase KDF salt and wrapped PMK ciphertext/nonces, never plaintext keys or passphrases. Recovery ciphertext and its nonce are both absent when recovery is disabled and both present when it is enabled.
 - Candidate extraction preserves the reported value, unit, and source region. An accepted observation records patient-reviewed and normalized data; an unconvertible value retains its original representation.
 - `ClientShareGrant` is patient-side and contains recipient and scope choices. It copies selected observations and relevant context into an immutable encrypted bundle. Corrections or new results require a new grant; the bundle is not a live link.
 - `GrantRecord` is server-side and contains only authorization, expiry, and ciphertext/key-share metadata. It must not contain recipient display names, analyte scope, date range, or clinical values in plaintext.
