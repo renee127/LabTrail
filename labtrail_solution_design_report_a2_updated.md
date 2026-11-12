@@ -298,15 +298,23 @@ classDiagram
         +Timestamp updated_at
     }
 
-    class GrantRecord {
+    class ClientShareGrant {
         +UUID grant_id
         +String recipient_name
         +String recipient_identity_hash
-        +String second_factor_verifier
-        +Integer failed_attempts
         +List~String~ granted_analytes
         +Date range_start
         +Date range_end
+        +Timestamp created_at
+        +Timestamp expires_at
+        +String local_status
+    }
+
+    class GrantRecord {
+        +UUID grant_id
+        +String recipient_identity_hash
+        +String second_factor_verifier_hash
+        +Integer failed_attempts
         +String schema_version
         +Bytes server_share
         +Bytes iv_nonce
@@ -330,18 +338,22 @@ classDiagram
         +Timestamp occurred_at
     }
 
-    PatientAccount "1" --> "*" ConfirmedIdentity : confirms
-    PatientAccount "1" --> "*" SourceReport : owns
-    PatientAccount "1" --> "*" ContextNote : records
-    PatientAccount "1" --> "*" GrantRecord : issues
-    SourceReport "1" --> "*" CandidateExtraction : yields
+    PatientAccount "1" --> "0..*" ConfirmedIdentity : confirms
+    PatientAccount "1" --> "0..*" SourceReport : owns
+    PatientAccount "1" --> "0..*" ContextNote : records
+    PatientAccount "1" --> "0..*" ClientShareGrant : creates on Z1
+    ClientShareGrant "1" --> "0..1" GrantRecord : registers metadata in Z3
+    ClientShareGrant "0..*" --> "0..*" AcceptedObservation : snapshots selected values
+    ClientShareGrant "0..*" --> "0..*" ContextNote : snapshots relevant notes
+    SourceReport "1" --> "0..*" CandidateExtraction : yields
     CandidateExtraction "1" --> "0..1" AcceptedObservation : promoted_to
-    SourceReport "1" --> "*" AcceptedObservation : grounds_provenance
-    GrantRecord "1" --> "*" AuditEvent : logged_in
-    AcceptedObservation "1" --> "*" AuditEvent : logged_in
+    SourceReport "1" --> "0..*" AcceptedObservation : grounds provenance
+    CandidateExtraction "1" --> "0..*" AuditEvent : review events
+    GrantRecord "1" --> "0..*" AuditEvent : logged in
+    AcceptedObservation "1" --> "0..*" AuditEvent : logged in
 ```
 
-**Figure 4 — Core Domain Model.** All sensitive clinical fields inside `SourceReport`, `CandidateExtraction`, `AcceptedObservation`, and `ContextNote` are encrypted client-side under the Patient Master Key hierarchy prior to persistence in `Z3`.
+**Figure 4 — Core Domain Model.** Patient-owned classes (`PatientAccount`, `ConfirmedIdentity`, `SourceReport`, `CandidateExtraction`, `AcceptedObservation`, `ContextNote`, and `ClientShareGrant`) are managed in `Z1`; sensitive fields are encrypted under the Patient Master Key hierarchy before any persistence in `Z3`. `ClientShareGrant` holds the patient's recipient and scope choices on `Z1`; selected observations and relevant context are copied into an immutable encrypted bundle. The corresponding `GrantRecord` in `Z3` contains only operational authorization metadata, cryptographic material, expiry/state, and a ciphertext pointer—not the recipient's display name, analyte scope, or date range. Audit metadata must not contain clinical values or share scope.
 
 ---
 
@@ -472,7 +484,7 @@ flowchart TB
 | **IF-01** | `CMP-04` (`Z1`) $\rightarrow$ `CMP-06` (`Z2`) | HTTPS / TLS 1.3; Patient Bearer + MFA (`NFR-04`) | Multipart upload: `file_bytes` (PDF/JPEG/PNG, $\le 25\text{ MB}$), `client_sha256`, `upload_nonce`. | Rejects unsupported MIME types (`415`), oversized payloads (`413`), or expired sessions (`401`). |
 | **IF-02** | `CMP-06` (`Z2`) $\rightarrow$ `CMP-12` (`Z4`) | Internal mTLS; Ephemeral Job Token (`TTL = 90s`) | `job_id`, `file_bytes`, `mime_type`, `reference_table_version`. | Worker runs with zero persistent disk and zero outbound network access; hard timeout at `60s` (`NFR-11`). |
 | **IF-03** | `CMP-14` (`Z4`) $\rightarrow$ `CMP-04` (`Z1`) | HTTPS / TLS 1.3; Ephemeral Job Token | `CandidateExtractionResult` JSON (Section 7.3) + per-page coordinate metadata. | Worker wipes RAM immediately after `200 OK` delivery; schema failure triggers `502` and retry/manual fallback. |
-| **IF-04a** | `CMP-01`/`02` (`Z1`) $\rightarrow$ `CMP-09` (`Z3`) | HTTPS / TLS 1.3; Patient Bearer + MFA | `grant_id`, `recipient_name`, `recipient_identity_hash`, `second_factor_verifier`, `granted_analytes`, `range_start`, `range_end`, `expires_at`, `schema_version`, `server_share` (256-bit), `iv_nonce` (96-bit), `bundle_ciphertext` (AES-256-GCM output including 128-bit tag). | Rejects if `expires_at` is missing or $> 5\text{ years}$ (`NFR-02`); rejects if `Recipient_Share` or `Grant_Key` is present in payload; logs `GRANT_CREATED` (`CMP-10`). |
+| **IF-04a** | `CMP-01`/`02` (`Z1`) $\rightarrow$ `CMP-09` (`Z3`) | HTTPS / TLS 1.3; Patient Bearer + MFA | `grant_id`, `recipient_identity_hash`, `second_factor_verifier_hash`, `expires_at`, `schema_version`, `server_share` (256-bit), `iv_nonce` (96-bit), `bundle_ciphertext` (AES-256-GCM output including 128-bit tag). Recipient display name remains on `Z1`; scope (`granted_analytes`, `range_start`, `range_end`) remains on `Z1` and is represented only inside the encrypted bundle. Neither is sent as plaintext metadata. | Rejects if `expires_at` is missing or $> 5\text{ years}$ (`NFR-02`); rejects if plaintext scope, `Recipient_Share`, or `Grant_Key` is present in payload; logs `GRANT_CREATED` (`CMP-10`). |
 | **IF-05** | `CMP-05` (`Z1-R`) $\rightarrow$ `CMP-09` (`Z3`) | HTTPS / TLS 1.3; `grant_id` + Per-Session 2FA (`FR-22`) | **Request:** `grant_id`, `second_factor_proof`, `session_nonce`.<br/>**Response:** `grant_id`, `schema_version`, `iv_nonce` (96-bit), `server_share` (256-bit), `bundle_ciphertext`. *(Note: Wrapped keys are deprecated; `bundle_ciphertext` is encrypted directly under `Grant_Key`.)* | Fails closed (`403`/`503`) if revoked, expired, locked out ($\ge 5$ failed 2FA attempts), or lease stale (`NFR-12`, `NFR-15`); logs `ACCESS_GRANTED` or `ACCESS_DENIED` (`CMP-10`). |
 
 ### 7.3 Canonical Data Schemas
@@ -667,7 +679,7 @@ Earlier architectural drafts contemplated encrypting `ShareBundle` under a symme
    $$\text{Server\_Share} \xleftarrow{\$} \{0,1\}^{256}, \qquad \text{Recipient\_Share} = \text{Grant\_Key} \oplus \text{Server\_Share}$$
    Immediately after computing `Server_Share` and `Recipient_Share`, `CMP-01` overwrites the in-memory buffers holding `Grant_Key` and `plaintext_bundle` with zeros (`NFR-20`).
 5. **Registration & Out-of-Band Link Assembly (`IF-04a`):**
-   * `Z1` transmits `grant_id`, `Server_Share`, `IV`, `schema_version`, `expires_at`, `recipient_identity_hash`, `second_factor_verifier`, and `bundle_ciphertext` to `CMP-09` (`Z3`) over `IF-04a`.
+   * `Z1` transmits `grant_id`, `Server_Share`, `IV`, `schema_version`, `expires_at`, `recipient_identity_hash`, `second_factor_verifier_hash`, and `bundle_ciphertext` to `CMP-09` (`Z3`) over `IF-04a`. The recipient display name remains client-side; analyte/date scope remains client-side and is represented only inside the encrypted bundle.
    * `Z1` formats the recipient share URL placing `Recipient_Share` exclusively in the **URI fragment**:
      $$\texttt{https://app.labtrail.example/share/}\langle\texttt{grant\_id}\rangle\texttt{\#}\langle\texttt{base64url(Recipient\_Share)}\rangle$$
    * The patient delivers the share URL and the separate out-of-band second factor (`FR-22`) to the recipient.
@@ -958,7 +970,7 @@ sequenceDiagram
 * **CL-25:** Authored formal JSON Schema for `CandidateExtractionResult` (`Section 7.3.1`) enforcing coordinate normalization and confidence metadata.
 * **CL-26:** Generalized personal family relationships and specific commercial laboratory/EHR names in `Section 2.1` to protect third-party privacy.
 * **CL-27:** Constructed 35-row deterministic exception handling matrix (`Section 7.4.2`) covering upload, extraction, normalization, redaction, auth, and partition failures.
-* **CL-28:** Authored `Figure 4` Domain Model (`classDiagram`) formalizing relationships across `PatientAccount`, `SourceReport`, `CandidateExtraction`, `AcceptedObservation`, `ContextNote`, `GrantRecord`, and `AuditEvent`.
+* **CL-28:** Authored `Figure 4` Domain Model (`classDiagram`) formalizing patient-side domain objects (`PatientAccount`, `ConfirmedIdentity`, `SourceReport`, `CandidateExtraction`, `AcceptedObservation`, `ContextNote`, `ClientShareGrant`) separately from server-side `GrantRecord` metadata and `AuditEvent`.
 * **CL-29:** Authored `Figure 5` (Review Queue State Machine) and `Figure 6` (Grant Lifecycle State Machine) in Mermaid `stateDiagram-v2`.
 * **CL-30:** Authored `Figure 7` End-to-End Sequence Interaction Model (`sequenceDiagram`) tracing upload, ephemeral extraction, split-key sharing, recipient decryption, and revocation.
 * **CL-31:** Recorded five Architectural Design Decision Records (`DR-01` through `DR-05`) documenting rationale and rejected alternatives.
