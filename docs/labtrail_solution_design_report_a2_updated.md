@@ -1,13 +1,13 @@
 # LabTrail
 
 **A Patient-Controlled Longitudinal Lab Record**  
-**Solution Design Report — Assignment 2: Solution Architecture and Design**
+**Solution Design Report**
 
 **Author:** Renee Raven  
 **Email:** rraven2021@fau.edu  
 **Course:** CEN 5035 — Software Engineering  
 **Instructor:** Dr. Fernando Koch  
-**Date:** 10/10/26 *(Cryptographic & Security Revision)*
+**Date:** 11/13/26 *(Cryptographic & Security Revision)*
 
 ---
 
