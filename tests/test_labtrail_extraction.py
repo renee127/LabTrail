@@ -7,6 +7,7 @@ import pytest
 from PIL import Image, ImageDraw, ImageFont
 
 from labtrail_extraction import (
+    _parse_result_line,
     extract_document_ocr_line_candidates,
     extract_ocr_line_candidates,
     extract_pdf_ocr_line_candidates,
@@ -268,3 +269,19 @@ def test_ocr_extractor_result_cannot_make_a_page_delivery_ready() -> None:
     assert redaction.disposition == "WITHHELD"
     assert redaction.withheld_reason == "ROW_COVERAGE_UNVERIFIED"
     assert redaction.redacted_png is None
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("Glucose 104 mg/dL 70-99", ("Glucose", "104", "mg/dL", "70-99")),
+        ("LDL Cholesterol 3.1 mmol/L <2.6", ("LDL Cholesterol", "3.1", "mmol/L", "<2.6")),
+        ("Hemoglobin A1c 6.1 %", ("Hemoglobin A1c", "6.1", "%", None)),
+        ("Glucose 97 mg/dL H", ("Glucose", "97", "mg/dL", None)),
+        ("Collected: 2026-02-10", ("Collected: 2026-02-10", None, None, None)),
+    ],
+)
+def test_result_line_parser_captures_leading_reference_interval(
+    line: str, expected: tuple[str, str | None, str | None, str | None]
+) -> None:
+    assert _parse_result_line(line) == expected

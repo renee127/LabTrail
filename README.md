@@ -2,6 +2,31 @@
 LabTrail project repository
 A Patient-Controlled Longitudinal Lab Record
 
+## Run the demo
+
+```bash
+brew install tesseract                      # OCR engine (macOS)
+python3 -m pip install -r requirements-dev.txt
+python3 scripts/make_synthetic_reports.py   # writes samples/*.pdf + ground_truth.json
+streamlit run app.py
+```
+
+The demo walks through one end-to-end slice with synthetic data only:
+
+1. **Upload**: load PDF/PNG/JPEG reports (or the three samples) and confirm the lab,
+   collection date, and that the printed name is yours.
+2. **Review**: accept, correct, or reject each extracted row next to a crop of the
+   source page. Nothing enters the record automatically.
+3. **Timeline**: one chart per analyte across labs, converted with a versioned unit
+   table, with markers when the lab, unit, or reference range changes. Values with no
+   supported conversion (e.g. HbA1c in mmol/mol) are listed, not plotted.
+4. **Share**: pick analytes, dates, and a recipient to produce a schema-validated JSON
+   share. Source pages are withheld because the OCR prototype cannot prove full row
+   coverage.
+
+Not built (designed only): encryption and key management, accounts, the recipient
+viewer, and revocation.
+
 ## Development checks
 
 Install Tesseract OCR (for example, `brew install tesseract` on macOS), then install

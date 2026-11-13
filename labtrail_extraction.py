@@ -31,7 +31,10 @@ _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 _RESULT_LINE_PATTERN = re.compile(
     r"^(?P<analyte>.+?)\s+"
     r"(?P<value>(?:[<>≤≥]\s*)?[+-]?\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?)\s+"
-    r"(?P<unit>[A-Za-zµμ%][A-Za-z0-9µμ%./^*+-]*)(?:\s+.*)?$"
+    r"(?P<unit>[A-Za-zµμ%][A-Za-z0-9µμ%./^*+-]*)(?:\s+(?P<rest>.*))?$"
+)
+_REFERENCE_INTERVAL_PATTERN = re.compile(
+    r"^(?P<interval>\d+(?:\.\d+)?\s*[-–]\s*\d+(?:\.\d+)?|[<>≤≥]\s*\d+(?:\.\d+)?)(?:\s|$)"
 )
 _RESULT_SCHEMA = json.loads(
     Path(__file__)
@@ -192,14 +195,26 @@ def _validate_upload_bytes(source_bytes: bytes, description: str) -> None:
         raise ValueError("Uploaded document exceeds the 25 MB size limit.")
 
 
-def _parse_result_line(text: str) -> tuple[str, str | None, str | None]:
+def _parse_result_line(
+    text: str,
+) -> tuple[str, str | None, str | None, str | None]:
+    """Split one OCR line into analyte, value, unit, and a leading reference interval."""
     match = _RESULT_LINE_PATTERN.fullmatch(text)
     if match is None:
-        return text, None, None
+        return text, None, None, None
     analyte = match.group("analyte").strip()
     if not analyte or not any(character.isalpha() for character in analyte):
-        return text, None, None
-    return analyte, match.group("value").replace(" ", ""), match.group("unit")
+        return text, None, None, None
+    interval_match = _REFERENCE_INTERVAL_PATTERN.match(match.group("rest") or "")
+    reference_interval = (
+        interval_match.group("interval").replace(" ", "") if interval_match else None
+    )
+    return (
+        analyte,
+        match.group("value").replace(" ", ""),
+        match.group("unit"),
+        reference_interval,
+    )
 
 
 def extract_pdf_ocr_line_candidates(
@@ -377,7 +392,9 @@ def extract_ocr_line_candidates(
     for words in ordered_lines:
         words.sort(key=lambda word: word[0])
         text = " ".join(word[4] for word in words)
-        analyte_name, raw_value, raw_unit = _parse_result_line(text)
+        analyte_name, raw_value, raw_unit, reference_interval = _parse_result_line(
+            text
+        )
         left = max(0, min(word[0] for word in words))
         top = max(0, min(word[1] for word in words))
         right = min(image_width, max(word[2] for word in words))
@@ -398,7 +415,7 @@ def extract_ocr_line_candidates(
                 proposed_analyte_code="UNMAPPED",
                 raw_value=raw_value,
                 raw_unit=raw_unit,
-                reference_interval=None,
+                reference_interval=reference_interval,
                 method_note=None,
                 specimen_type=None,
                 abnormal_flag=None,
