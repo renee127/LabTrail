@@ -217,6 +217,12 @@ The repository is ready to deploy as is:
 <!-- USAGE -->
 ## Usage
 
+
+
+https://github.com/user-attachments/assets/aaee10de-607d-4196-93d9-17bcaa1f2155
+
+
+
 A full pass takes about five minutes using the three built-in synthetic reports from three
 fictional labs.
 
