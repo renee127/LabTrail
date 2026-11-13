@@ -32,6 +32,9 @@ header is authenticated so its settings cannot be weakened) and opens it again l
 Not built (designed only): a patient master key with recovery phrase, accounts and
 server storage, encryption of shares, the recipient viewer, and revocation.
 
+See [docs/implementation.md](docs/implementation.md) for diagrams of what is built,
+changes from the design report, and requirement-by-requirement coverage.
+
 ## Development checks
 
 Install Tesseract OCR (for example, `brew install tesseract` on macOS), then install
