@@ -24,6 +24,8 @@ from labtrail_workflow import (
     ANALYTE_LABELS,
     COMPARABILITY_LABELS,
     RULE_VERSION,
+    SIDEBAR_NOTICE,
+    TIMELINE_NOTICE,
     accept_candidate,
     analyte_timeline,
     build_share,
@@ -177,12 +179,14 @@ def page_upload() -> None:
 
 # ---------------------------------------------------------------- review
 
-def _crop(report: dict, candidate: CandidateExtraction) -> Image.Image | None:
-    if candidate.bounding_box is None:
+def _crop(
+    report: dict, page_number: int, bounding_box: tuple[float, float, float, float] | None
+) -> Image.Image | None:
+    if bounding_box is None:
         return None
-    page = Image.open(BytesIO(report["pages"][candidate.page_number]))
+    page = Image.open(BytesIO(report["pages"][page_number]))
     w, h = page.size
-    x0, y0, x1, y1 = candidate.bounding_box
+    x0, y0, x1, y1 = bounding_box
     pad = 8
     return page.crop((max(0, int(x0 * w) - pad), max(0, int(y0 * h) - pad),
                       min(w, int(x1 * w) + pad), min(h, int(y1 * h) + pad)))
@@ -271,7 +275,7 @@ def page_review() -> None:
             with st.container(border=True):
                 crop_col, form_col = st.columns([2, 3])
                 with crop_col:
-                    crop = _crop(report, c)
+                    crop = _crop(report, c.page_number, c.bounding_box)
                     if crop is not None:
                         st.image(crop, caption=f"Source: page {c.page_number}")
                     st.caption(f"OCR confidence {c.field_confidences['value']:.0%}")
@@ -313,14 +317,32 @@ def page_review() -> None:
 
 # ---------------------------------------------------------------- timeline
 
+def _show_source(observation) -> None:
+    """FR-10: show the exact source region of an accepted value, or say it is unavailable."""
+    report = _state().reports.get(observation.report_id)
+    if report is None:
+        st.warning("The source report for this value is not in this record.")
+        return
+    where = f"{report['filename']}, page {observation.page_number}"
+    with st.container(border=True):
+        crop = _crop(report, observation.page_number, observation.bounding_box)
+        if crop is not None:
+            st.image(crop, caption=f"Source: {where}")
+            with st.expander("Whole page"):
+                st.image(report["pages"][observation.page_number])
+        else:
+            st.info(f"Region unavailable for this value. Showing the whole page: {where}.")
+            st.image(report["pages"][observation.page_number])
+
+
 def page_timeline() -> None:
     ss = _state()
     st.header("3 · Timeline")
     st.caption(
         "Accepted values from every lab, converted to one unit where a versioned rule exists "
-        f"(rules {RULE_VERSION}). LabTrail shows what changed between results; it does not "
-        "say whether a value is good or bad."
+        f"(rules {RULE_VERSION})."
     )
+    st.caption(TIMELINE_NOTICE)
     active = [o for o in ss.observations if o.lifecycle_status == "ACCEPTED"]
     if not active:
         st.info("Accept some results on the **Review** page first.")
@@ -363,9 +385,14 @@ def page_timeline() -> None:
         st.caption("Dashed lines are your context notes. Hover a point for its source details.")
 
     st.write("**All results for this analyte**")
+    widths = [2, 3, 2, 2, 2, 3, 1, 1]
+    for col, label in zip(st.columns(widths), (
+        "Collected", "Lab", "As reported", "Converted", "Reference range", "Compared with previous", "", "",
+    )):
+        col.caption(label)
     for p in points:
         o = p.observation
-        cols = st.columns([2, 3, 2, 2, 2, 3, 1])
+        cols = st.columns(widths)
         cols[0].write(str(o.collection_datetime))
         cols[1].write(o.source_lab)
         cols[2].write(f"{o.original_value} {o.original_unit}")
@@ -379,8 +406,13 @@ def page_timeline() -> None:
             o.lifecycle_status = "RETRACTED_BY_PATIENT"
             _log(f"Retracted {ANALYTE_LABELS[o.analyte_code]} {o.original_value} {o.original_unit} ({o.collection_datetime})")
             st.rerun()
+        if cols[7].button("Source", key=f"source-{o.observation_id}", help="Show where this value came from"):
+            ss.source_view = None if ss.get("source_view") == o.observation_id else o.observation_id
+            st.rerun()
         if o.provenance_flag == "CORRECTED_BY_PATIENT":
             cols[1].caption("value corrected by you")
+        if ss.get("source_view") == o.observation_id:
+            _show_source(o)
 
     if retained:
         st.warning(
@@ -547,7 +579,7 @@ def main() -> None:
     ss = _state()
     st.sidebar.title("🧪 LabTrail")
     st.sidebar.caption("Patient-controlled lab history · demo")
-    st.sidebar.warning("Synthetic data only. LabTrail organizes results; it does not diagnose or give medical advice.")
+    st.sidebar.warning(SIDEBAR_NOTICE)
     pages = {"Upload": page_upload, "Review": page_review, "Timeline": page_timeline, "Share": page_share}
     choice = st.sidebar.radio("Step", list(pages))
     pending = sum(

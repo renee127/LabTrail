@@ -257,10 +257,10 @@ Status: **Built** works end to end in the demo; **Partial** works with the state
 | FR-07 | Comparability markers | Built | `compare_adjacent_observations`, `analyte_timeline` | algorithms, workflow, smoke |
 | FR-08 | No automatic acceptance | Built: every OCR line is mandatory review | `partition_review_queue`, Review page | algorithms, smoke |
 | FR-09 | Accept, correct, reject with provenance | Built (activity log is local, not hash-chained) | `accept_candidate` | workflow, smoke |
-| FR-10 | Link value to source region | Partial: crop shown during review; not yet clickable from the timeline | Review page `_crop` | — |
+| FR-10 | Link value to source region | Built: **Source** on any timeline row shows the cropped region and whole page, or says the region is unavailable | `app._show_source` | smoke |
 | FR-11 | Context notes | Partial: create and link to analytes; no editing | Timeline page | workflow (share scoping) |
 | FR-12 | Chronological analyte view | Built | Timeline page, `analyte_timeline` | workflow, smoke |
-| FR-13 | No interpretation | Partial: no summaries or interpretive text exist; no automated prohibited-phrase scanner | — | — |
+| FR-13 | No interpretation | Built: no summaries are computed; a scanner fails the build if any page or the share JSON uses interpretive words | `find_interpretive_language` | workflow, smoke |
 | FR-14 | Scoped, expiring grant | Built | `build_share`, `ClientShareGrant` | workflow, schema |
 | FR-15 | Revocation within 5 s | Not built | — | — |
 | FR-16 | Access log | Not built | — | — |
@@ -281,7 +281,7 @@ accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
 
 ## 7. Validation summary
 
-- **115 automated tests** run on every push (GitHub Actions), including a test that
+- **127 automated tests** run on every push (GitHub Actions), including a test that
   drives the real app through upload, review, timeline, redacted share, and
   encrypted save.
 - **Extraction accuracy** (row exact: value, unit, and range all correct): 100% on

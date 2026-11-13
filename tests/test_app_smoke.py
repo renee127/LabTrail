@@ -2,11 +2,36 @@
 
 from streamlit.testing.v1 import AppTest
 
+from labtrail_workflow import ANALYTE_LABELS, SIDEBAR_NOTICE, find_interpretive_language
+
 
 def _click(at: AppTest, label_prefix: str, index: int = 0) -> None:
     matches = [b for b in at.button if b.label.startswith(label_prefix)]
     matches[index].click()
     at.run(timeout=120)
+
+
+def _visible_text(at: AppTest) -> str:
+    """Every string the app rendered: markdown, captions, alerts, labels, metrics."""
+    parts: list[str] = []
+
+    def walk(node) -> None:
+        for attr in ("value", "label", "body", "help", "placeholder"):
+            value = getattr(node, attr, None)
+            if isinstance(value, str):
+                parts.append(value)
+        for child in getattr(node, "children", {}).values():
+            walk(child)
+
+    walk(at._tree)
+    return "\n".join(parts)
+
+
+def _assert_no_interpretation(at: AppTest, page: str) -> None:
+    text = _visible_text(at)
+    assert SIDEBAR_NOTICE in text  # proves the walker reaches sidebar alerts
+    found = find_interpretive_language(text)
+    assert not found, f"Interpretive language on {page}: {found}"
 
 
 def test_upload_confirm_review_timeline_share() -> None:
@@ -42,10 +67,26 @@ def test_upload_confirm_review_timeline_share() -> None:
         for inv in r["result"].page_inventories
     )
 
+    _assert_no_interpretation(at, "Review")
+
     at.sidebar.radio[0].set_value("Timeline")
     at.run()
     assert not at.exception
     assert any("different reported unit" in m.value for m in at.markdown)
+    _assert_no_interpretation(at, "Timeline")
+    assert "different reported unit" in _visible_text(at)
+    for analyte in ANALYTE_LABELS:
+        at.radio[0].set_value(analyte)
+        at.run()
+        _assert_no_interpretation(at, f"Timeline/{analyte}")
+
+    images_before = len(at.get("image"))
+    _click(at, "Source")
+    assert not at.exception
+    assert len(at.get("image")) > images_before
+    assert any(e.label == "Whole page" for e in at.expander)
+    _click(at, "Source")
+    assert not any(e.label == "Whole page" for e in at.expander)
 
     at.sidebar.radio[0].set_value("Share")
     at.run()
@@ -54,6 +95,8 @@ def test_upload_confirm_review_timeline_share() -> None:
     assert any("3 result(s)" in s.value for s in at.success)
     assert not any("withheld" in m.value for m in at.markdown)
     assert len(at.get("image")) >= 3
+    _assert_no_interpretation(at, "Share")
+    assert not find_interpretive_language(at.get("code")[0].value)
 
 
 def test_encrypted_record_round_trip_through_the_ui() -> None:

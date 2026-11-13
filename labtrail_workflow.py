@@ -75,6 +75,37 @@ COMPARABILITY_LABELS: dict[str, str] = {
     "reference_interval": "different reference range",
 }
 
+# FR-13: LabTrail organizes values and must never interpret them. These are the
+# only sentences allowed to mention interpretation, and only to disclaim it.
+SIDEBAR_NOTICE = (
+    "Synthetic data only. LabTrail organizes results; it does not diagnose or give "
+    "medical advice."
+)
+TIMELINE_NOTICE = (
+    "LabTrail shows what changed between results; it does not say whether a value "
+    "is good or bad."
+)
+_NON_INTERPRETATION_NOTICES = (SIDEBAR_NOTICE, TIMELINE_NOTICE)
+_INTERPRETIVE_PATTERN = re.compile(
+    r"\b(?:abnormal\w*|normal|healthy|unhealthy|risk\w*|diagnos\w*|prognos\w*"
+    r"|elevated|dangerous|concerning|worr\w*|improv\w*|worse\w*|better"
+    r"|recommend\w*|you should|see a doctor|treatment\w*|optimal|critical"
+    r"|high|low|good|bad)\b",
+    re.IGNORECASE,
+)
+
+
+def find_interpretive_language(text: str) -> list[str]:
+    """Return interpretive words in system-generated text (FR-13 scanner).
+
+    The fixed non-interpretation notices are exempt. Patient-authored note text
+    should not be passed in; the rule applies to what LabTrail itself says.
+    """
+    for notice in _NON_INTERPRETATION_NOTICES:
+        text = text.replace(notice, " ")
+    return [match.group(0) for match in _INTERPRETIVE_PATTERN.finditer(text)]
+
+
 _SHARE_SCHEMA = json.loads(
     Path(__file__).with_name("share_payload_schema_v1.json").read_text(encoding="utf-8")
 )

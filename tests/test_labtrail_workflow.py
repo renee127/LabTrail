@@ -14,7 +14,10 @@ from labtrail_extraction import extract_document_ocr_line_candidates
 from labtrail_redaction import rasterize_pdf_page, redact_source_page
 from labtrail_workflow import (
     accept_candidate,
+    TIMELINE_NOTICE,
+    SIDEBAR_NOTICE,
     confirm_page_coverage,
+    find_interpretive_language,
     analyte_timeline,
     build_share,
     is_result_like,
@@ -229,3 +232,33 @@ def test_confirmed_page_is_redacted_to_only_the_granted_row() -> None:
     assert "glucose" in text and "104" in text
     for hidden in ("cholesterol", "131", "hemoglobin", "6.1", "jordan", "harbor"):
         assert hidden not in text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Your glucose is elevated.",
+        "This value is abnormal",
+        "Higher risk of diabetes",
+        "Consider a diagnosis of prediabetes",
+        "We recommend you see a doctor",
+        "LDL looks better than last time",
+        "Result is HIGH",
+    ],
+)
+def test_interpretive_language_is_detected(text) -> None:
+    assert find_interpretive_language(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        SIDEBAR_NOTICE,
+        TIMELINE_NOTICE,
+        "Glucose 104 mg/dL, reference range 70-99, different lab",
+        "Values were normalized to mg/dL with rule demo-units-2026.11",
+        "Not plotted: no supported conversion",
+    ],
+)
+def test_neutral_text_and_fixed_notices_pass(text) -> None:
+    assert find_interpretive_language(text) == []
