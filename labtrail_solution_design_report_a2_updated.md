@@ -257,19 +257,26 @@ classDiagram
     class CandidateExtraction {
         +UUID candidate_id
         +UUID report_id
+        +UUID extraction_job_id
+        +Integer row_index
         +String raw_analyte_name
         +String proposed_analyte_code
-        +String raw_value
-        +String raw_unit
-        +String reference_interval
-        +String specimen_type
-        +String abnormal_flag
+        +Optional~String~ raw_value
+        +Optional~String~ raw_unit
+        +Optional~String~ reference_interval
+        +Optional~String~ method_note
+        +Optional~String~ specimen_type
+        +Optional~String~ abnormal_flag
         +Integer page_number
-        +JSON bounding_box
+        +Optional~BoundingBox~ bounding_box
         +Boolean region_available
-        +Float confidence_score
+        +JSON field_confidences
+        +String model_identifier
         +String model_version
-        +String status
+        +String prompt_hash
+        +Timestamp extracted_at
+        +String routing_status
+        +String lifecycle_status
     }
 
     class AcceptedObservation {
@@ -277,16 +284,19 @@ classDiagram
         +UUID candidate_id
         +UUID report_id
         +String analyte_code
-        +Decimal canonical_value
-        +String canonical_unit
+        +Optional~Decimal~ canonical_value
+        +Optional~String~ canonical_unit
         +String original_value
         +String original_unit
-        +Decimal conversion_factor
-        +Boolean is_convertible
-        +String unconvertible_reason
-        +String reference_interval
+        +Optional~Decimal~ conversion_factor
+        +String conversion_outcome
+        +Optional~String~ unconvertible_reason
+        +Optional~String~ reference_interval
+        +Optional~String~ method_note
         +String source_lab
-        +Date collection_date
+        +DateOrDateTime collection_datetime
+        +Integer page_number
+        +Optional~BoundingBox~ bounding_box
         +String provenance_flag
         +String lifecycle_status
         +String rule_version
@@ -362,6 +372,10 @@ classDiagram
 **Figure 4 — Core Domain Model.** Patient-owned classes (`PatientAccount`, `ConfirmedIdentity`, `SourceReport`, `CandidateExtraction`, `AcceptedObservation`, `ContextNote`, and `ClientShareGrant`) are managed in `Z1`; sensitive fields are encrypted under the Patient Master Key hierarchy before any persistence in `Z3`. `ClientShareGrant` holds the patient's recipient and scope choices on `Z1`; selected observations and relevant context are copied into an immutable encrypted bundle. The corresponding `GrantRecord` in `Z3` contains only operational authorization metadata, cryptographic material, expiry/state, and a ciphertext pointer—not the recipient's display name, analyte scope, or date range. Audit metadata must not contain clinical values or share scope.
 
 `SourceReport` metadata may be incomplete at upload and is completed by the patient before timeline use. Its uploaded artifact and hash remain immutable. Collection and report values preserve date-only or date-time precision, including a timezone offset only when the source provides one; no time or offset is fabricated. A report links to at most one patient-confirmed lab identity, and one confirmed rendering may match multiple reports.
+
+`CandidateExtraction` retains optional `method_note` for comparability and copies the extraction job's model identifier, model version, prompt hash, and extraction timestamp onto each persisted candidate. Its field-confidence object contains exactly `analyte`, `value`, `unit`, and `region`, each in `[0, 1]`. A bounding box is `[x_min, y_min, x_max, y_max]` with normalized coordinates; it is null exactly when `region_available` is false. `routing_status` is separate from the candidate's lifecycle and never accepts a value automatically.
+
+`AcceptedObservation` stores one of the three deterministic conversion outcomes. `UNCONVERTIBLE_RETAINED` requires a reason and has no canonical value or conversion factor; a canonical unit is optional when no target is defined. It snapshots source page and optional bounding box (`null` means `REGION_UNAVAILABLE`), preserves date-only or date-time collection precision, and keeps lifecycle status separate from `AS_EXTRACTED` or `CORRECTED_BY_PATIENT` provenance. Optional source `method_note` values are preserved for FR-07 comparability checks.
 
 ---
 
@@ -509,6 +523,7 @@ flowchart TB
     "job_id",
     "model_identifier",
     "model_version",
+    "prompt_hash",
     "extracted_at",
     "report_metadata",
     "candidates"
@@ -518,6 +533,11 @@ flowchart TB
     "job_id": { "type": "string", "format": "uuid" },
     "model_identifier": { "type": "string", "minLength": 1 },
     "model_version": { "type": "string", "minLength": 1 },
+    "prompt_hash": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Hash of the exact extraction prompt; the prompt text itself is not included."
+    },
     "extracted_at": { "type": "string", "format": "date-time" },
     "report_metadata": {
       "type": "object",
@@ -567,6 +587,7 @@ flowchart TB
           "value_text",
           "unit_text",
           "reference_interval_text",
+          "method_note",
           "specimen_type",
           "abnormal_flag",
           "page_number",
@@ -582,10 +603,12 @@ flowchart TB
           "value_text": { "type": ["string", "null"] },
           "unit_text": { "type": ["string", "null"] },
           "reference_interval_text": { "type": ["string", "null"] },
+          "method_note": { "type": ["string", "null"] },
           "specimen_type": { "type": ["string", "null"] },
           "abnormal_flag": { "type": ["string", "null"] },
           "page_number": { "type": "integer", "minimum": 1 },
           "bounding_box": {
+            "description": "Normalized [x_min, y_min, x_max, y_max]; each coordinate is in [0,1], x_min < x_max, y_min < y_max; null exactly when region_available is false.",
             "type": ["array", "null"],
             "items": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
             "minItems": 4,
@@ -607,7 +630,27 @@ flowchart TB
             "type": "string",
             "enum": ["STANDARD_REVIEW", "MANDATORY_EXCEPTION_REVIEW"]
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "region_available": { "const": true } },
+              "required": ["region_available"]
+            },
+            "then": {
+              "properties": { "bounding_box": { "type": "array" } }
+            }
+          },
+          {
+            "if": {
+              "properties": { "region_available": { "const": false } },
+              "required": ["region_available"]
+            },
+            "then": {
+              "properties": { "bounding_box": { "type": "null" } }
+            }
+          }
+        ]
       }
     }
   }
@@ -645,7 +688,7 @@ flowchart TB
 | 05 | Extraction (`Z4`) | Extraction worker timeout ($> 60\text{ s}$) | Worker deadline timer (`IF-02`) | Terminate worker, purge memory, return `504` to `Z1` with retry option; existing records unaffected. | `NFR-11`, `NFR-15` |
 | 06 | Extraction (`Z4`) | `Z4` extraction service unreachable / degraded | Circuit breaker in `Z2` (`CMP-06`) | Return `503` for new imports; keep accepted records, timelines, and active grants fully readable. | `NFR-15` |
 | 07 | Extraction (`Z4`) | Non-laboratory document uploaded (e.g., billing invoice) | Document classifier (`CMP-12`) | Route to patient review as `NON_LAB_DOCUMENT`; allow override or discard. | `FR-02`, `NFR-08` |
-| 08 | Registration | Missing `collection_date` on report | Metadata validator (`CMP-04`) | Hold report in review queue naming missing `collection_date`; block timeline entry until entered. | `FR-02` |
+| 08 | Registration | Missing collection date/time on report | Metadata validator (`CMP-04`) | Hold report in review queue naming missing collection date/time; block timeline entry until entered. | `FR-02` |
 | 09 | Registration | Missing `source_laboratory` name | Metadata validator (`CMP-04`) | Hold report in review queue prompting patient to enter or select source laboratory. | `FR-02` |
 | 10 | Identity (`FR-21`) | Asserted patient name differs from all confirmed renderings | Exact normalized string check (`CMP-04`) | Hold entire report in `IDENTITY_CONFIRMATION_REQUIRED`; block all candidates from timelines. | `FR-21` |
 | 11 | Identity (`FR-21`) | Report belongs to another family member | Patient selects "Not my report" (`FR-21`) | Reject report and candidates (`REJECTED`); log event; zero values enter timelines. | `FR-21` |
@@ -655,7 +698,7 @@ flowchart TB
 | 15 | Normalization | Unrecognized analyte name (`UNMAPPED`) | Reference map lookup (`CMP-03`) | Flag `UNMAPPED`; hold in review until patient selects standard code or creates custom unmapped series. | `FR-04` |
 | 16 | Normalization | Missing unit on extracted numeric value | Unit presence check (`CMP-03`) | Route to review; block canonical conversion until patient supplies unit from source crop. | `FR-05`, `FR-08` |
 | 17 | Normalization | Valid unit has no conversion factor to canonical unit | Conversion table lookup (`CMP-03`) | Retain original value/unit (`UNCONVERTIBLE_RETAINED`), exclude from plotted chart, display in table below chart. | `FR-05`, `FR-12` |
-| 18 | Normalization | Same `(analyte, collection_date, source_lab)` already accepted | Duplicate row detector (`CMP-03`) | Flag row-level duplicate (`FR-06`) referencing existing `observation_id`; require explicit patient decision. | `FR-06` |
+| 18 | Normalization | Same `(analyte, collection_datetime, source_lab)` already accepted | Duplicate row detector (`CMP-03`) | Flag row-level duplicate (`FR-06`) referencing existing `observation_id`; require explicit patient decision. | `FR-06` |
 | 19 | Normalization | Reference data version updated by `SH-05` | Version comparison (`CMP-03`, `CMP-11`) | Never silently recompute accepted values (`NFR-17`); surface non-intrusive banner offering optional patient review. | `NFR-17` |
 | 20 | Output Gate | Candidate or UI text contains prohibited interpretive phrase | Prohibited-intent scanner (`CMP-14`, `FR-13`) | Block rendering/emission, log compliance alert, sanitize to strictly factual attributes. | `FR-13`, `NFR-07` |
 | 21 | Provenance | Source artifact or page reference cannot be resolved | Provenance resolver (`CMP-04`, `NFR-05`) | Suppress display of unresolvable value (`NFR-05`) and trigger integrity alert. | `NFR-05` |
@@ -766,18 +809,20 @@ stateDiagram-v2
 
     EXTRACTING --> PENDING_REVIEW : FR-21 Identity Matched (IF-03 Delivered)
 
-    PENDING_REVIEW --> ACCEPTED_AS_EXTRACTED : FR-09 Patient Accepts As-Is
-    PENDING_REVIEW --> ACCEPTED_CORRECTED : FR-09 Patient Corrects Value/Unit
+    PENDING_REVIEW --> ACCEPTED : FR-09 Patient Accepts or Corrects
     PENDING_REVIEW --> REJECTED : FR-09 Patient Rejects Candidate
 
-    ACCEPTED_AS_EXTRACTED --> RETRACTED_BY_PATIENT : FR-24 Post-Share Retraction
-    ACCEPTED_CORRECTED --> RETRACTED_BY_PATIENT : FR-24 Post-Share Retraction
+    ACCEPTED --> RETRACTED_BY_PATIENT : FR-24 Post-Share Retraction
 
     REJECTED --> [*]
     RETRACTED_BY_PATIENT --> [*]
+
+    note right of ACCEPTED
+        provenance_flag is AS_EXTRACTED or CORRECTED_BY_PATIENT
+    end note
 ```
 
-**Figure 5 — Candidate & Report Review State Machine.** No transition exists from `EXTRACTED` or `PENDING_REVIEW` to `ACCEPTED_*` without an explicit patient actor event (`FR-08`, `NFR-08`).
+**Figure 5 — Candidate & Report Review State Machine.** No transition exists from `EXTRACTED` or `PENDING_REVIEW` to `ACCEPTED` without an explicit patient actor event (`FR-08`, `NFR-08`). Review provenance is stored separately as `AS_EXTRACTED` or `CORRECTED_BY_PATIENT`.
 
 #### 7.6.2 Grant Lifecycle & 5-Second Revocation State Machine
 
@@ -903,10 +948,10 @@ sequenceDiagram
 | **FR-04** | `CMP-03`, `CMP-11` | Reference Data API | Synonym mapping & `UNMAPPED` flag test (Inc 2) |
 | **FR-05** | `CMP-03`, `CMP-11` | Deterministic Conversion Rule | 3-outcome unit conversion & unconvertible retention test (Inc 2) |
 | **FR-06** | `CMP-03`, `CMP-04` | Hash & Row Duplicate Check | Re-import file & row duplicate detection test (Inc 2) |
-| **FR-07** | `CMP-03`, `CMP-04`, `CMP-05` | Comparability Discontinuity Rule | Cross-lab discontinuity badge test across UI/print/share (Inc 2) |
+| **FR-07** | `CMP-03`, `CMP-04`, `CMP-05` | `AcceptedObservation` source lab, unit, reference interval, and `method_note` | Cross-lab discontinuity badge test across UI/print/share (Inc 2) |
 | **FR-08** | `CMP-04`, `CMP-14` | Fig. 5 (`PENDING_REVIEW`) | Degraded input routing & zero-auto-accept audit test (Inc 1) |
-| **FR-09** | `CMP-04`, `CMP-10` | Fig. 5 (`ACCEPTED_*` / `REJECTED`) | Correction provenance & prior-value audit test (Inc 1) |
-| **FR-10** | `CMP-04`, `CMP-08` | `AcceptedObservation.page_number/bbox` | One-click source page & region highlight test (Inc 1) |
+| **FR-09** | `CMP-04`, `CMP-10` | Fig. 5 (`ACCEPTED` / `REJECTED`; separate provenance flag) | Correction provenance & prior-value audit test (Inc 1) |
+| **FR-10** | `CMP-04`, `CMP-08` | `AcceptedObservation.page_number/bounding_box` | One-click source page & region highlight test (Inc 1) |
 | **FR-11** | `CMP-04`, `CMP-08` | `ContextNote` Entity | Dated note creation, association & timeline placement test (Inc 2) |
 | **FR-12** | `CMP-03`, `CMP-04` | Deterministic Timeline Renderer | Chronological ordering, source flags & unconvertible table test (Inc 2) |
 | **FR-13** | `CMP-03`, `CMP-04`, `CMP-14` | Prohibited-Intent Filter | Automated phrase-list scan & deterministic recomputation test (Inc 2) |

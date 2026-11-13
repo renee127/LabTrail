@@ -57,19 +57,26 @@ classDiagram
     class CandidateExtraction {
         +UUID candidate_id
         +UUID report_id
+        +UUID extraction_job_id
+        +Integer row_index
         +String raw_analyte_name
         +String proposed_analyte_code
-        +String raw_value
-        +String raw_unit
-        +String reference_interval
-        +String specimen_type
-        +String abnormal_flag
+        +Optional~String~ raw_value
+        +Optional~String~ raw_unit
+        +Optional~String~ reference_interval
+        +Optional~String~ method_note
+        +Optional~String~ specimen_type
+        +Optional~String~ abnormal_flag
         +Integer page_number
-        +JSON bounding_box
+        +Optional~BoundingBox~ bounding_box
         +Boolean region_available
-        +Float confidence_score
+        +JSON field_confidences
+        +String model_identifier
         +String model_version
-        +String status
+        +String prompt_hash
+        +Timestamp extracted_at
+        +String routing_status
+        +String lifecycle_status
     }
 
     class AcceptedObservation {
@@ -77,16 +84,19 @@ classDiagram
         +UUID candidate_id
         +UUID report_id
         +String analyte_code
-        +Decimal canonical_value
-        +String canonical_unit
+        +Optional~Decimal~ canonical_value
+        +Optional~String~ canonical_unit
         +String original_value
         +String original_unit
-        +Decimal conversion_factor
-        +Boolean is_convertible
-        +String unconvertible_reason
-        +String reference_interval
+        +Optional~Decimal~ conversion_factor
+        +String conversion_outcome
+        +Optional~String~ unconvertible_reason
+        +Optional~String~ reference_interval
+        +Optional~String~ method_note
         +String source_lab
-        +Date collection_date
+        +DateOrDateTime collection_datetime
+        +Integer page_number
+        +Optional~BoundingBox~ bounding_box
         +String provenance_flag
         +String lifecycle_status
         +String rule_version
@@ -164,7 +174,9 @@ classDiagram
 - The first four noun candidates map to `PatientAccount`, `SourceReport`, the `CandidateExtraction`/`AcceptedObservation` pair, and the `ClientShareGrant`/`GrantRecord` pair.
 - `PatientAccount` stores only the passphrase KDF salt and wrapped PMK ciphertext/nonces, never plaintext keys or passphrases. Recovery ciphertext and its nonce are both absent when recovery is disabled and both present when it is enabled.
 - `SourceReport` keeps its uploaded artifact and content hash immutable while allowing report metadata to be incomplete. Optional collection/report values preserve date-only or date-time precision, including a timezone offset only when the source provides one; confirmed reports link to the patient-scoped `ConfirmedIdentity` for that laboratory rendering.
+- `CandidateExtraction` retains nullable source fields, including `method_note` for comparability, four named field-confidence scores, and the extraction job/model/version/prompt-hash provenance. Its normalized bounding box is either absent with `region_available = false` or `[x_min, y_min, x_max, y_max]` in the range 0–1. `routing_status` only routes review; `lifecycle_status` starts at `CANDIDATE` and never implies automatic acceptance.
 - Candidate extraction preserves the reported value, unit, and source region. An accepted observation records patient-reviewed and normalized data; an unconvertible value retains its original representation.
+- `AcceptedObservation.conversion_outcome` is `CANONICAL_DIRECT`, `CONVERTED_DETERMINISTIC`, or `UNCONVERTIBLE_RETAINED`. Unconvertible values have no canonical value or factor and require an explicit reason. Source page and optional bounding box are snapshotted for one-action provenance; a missing box denotes `REGION_UNAVAILABLE`. Its lifecycle (`ACCEPTED` or `RETRACTED_BY_PATIENT`) is distinct from review provenance (`AS_EXTRACTED` or `CORRECTED_BY_PATIENT`), and its collection value preserves date-only or date-time precision. Optional source `method_note` is retained for comparability checks.
 - `ClientShareGrant` is patient-side and contains recipient and scope choices. It copies selected observations and relevant context into an immutable encrypted bundle. Corrections or new results require a new grant; the bundle is not a live link.
 - `GrantRecord` is server-side and contains only authorization, expiry, and ciphertext/key-share metadata. It must not contain recipient display names, analyte scope, date range, or clinical values in plaintext.
 - Sensitive patient-owned fields are encrypted before persistence in the hosted store. Audit metadata records actions and targets, not clinical values or share scope.
