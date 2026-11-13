@@ -23,7 +23,7 @@ from models import (
 )
 
 
-_MAX_RASTER_PIXELS = 40_000_000
+MAX_RASTER_PIXELS = 40_000_000
 PageDisposition = Literal["REDACTED_PNG", "WITHHELD"]
 WithheldReason = Literal[
     "NO_GRANTED_OBSERVATION",
@@ -195,7 +195,7 @@ def rasterize_pdf_page(
             raise ValueError("PDF page dimensions must be finite and positive.")
         raster_width = ceil(width_points * scale)
         raster_height = ceil(height_points * scale)
-        if raster_width * raster_height > _MAX_RASTER_PIXELS:
+        if raster_width * raster_height > MAX_RASTER_PIXELS:
             raise ValueError("PDF page dimensions exceed the rasterization limit.")
         bitmap = page.render(scale=scale)
         image = bitmap.to_pil().convert("RGB")

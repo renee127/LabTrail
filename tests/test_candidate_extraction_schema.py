@@ -1,5 +1,4 @@
 import json
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,6 +8,10 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
+from labtrail_extraction import (
+    parse_candidate_extraction_result,
+    serialize_candidate_extraction_result,
+)
 from models import (
     CandidateExtraction,
     CandidateExtractionResult,
@@ -24,20 +27,8 @@ SCHEMA = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 VALIDATOR = Draft202012Validator(SCHEMA, format_checker=FormatChecker())
 
 
-def _json_value(value: Any) -> Any:
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, tuple):
-        return [_json_value(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _json_value(item) for key, item in value.items()}
-    return value
-
-
 @pytest.fixture
-def valid_result_payload() -> dict[str, Any]:
+def valid_result() -> CandidateExtractionResult:
     report_id = UUID(int=1)
     job_id = UUID(int=2)
     now = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
@@ -83,7 +74,14 @@ def valid_result_payload() -> dict[str, Any]:
             ),
         ),
     )
-    return _json_value(asdict(result))
+    return result
+
+
+@pytest.fixture
+def valid_result_payload(
+    valid_result: CandidateExtractionResult,
+) -> dict[str, Any]:
+    return json.loads(serialize_candidate_extraction_result(valid_result))
 
 
 def test_schema_is_valid_and_model_result_conforms(
@@ -91,6 +89,32 @@ def test_schema_is_valid_and_model_result_conforms(
 ) -> None:
     Draft202012Validator.check_schema(SCHEMA)
     VALIDATOR.validate(valid_result_payload)
+
+
+def test_extraction_result_json_round_trips(
+    valid_result: CandidateExtractionResult,
+) -> None:
+    serialized = serialize_candidate_extraction_result(valid_result)
+
+    parsed = parse_candidate_extraction_result(serialized)
+
+    assert parsed == valid_result
+    assert serialize_candidate_extraction_result(parsed) == serialized
+
+
+def test_parser_rejects_invalid_json() -> None:
+    with pytest.raises(ValueError, match="valid UTF-8 JSON"):
+        parse_candidate_extraction_result(b"{")
+
+
+def test_parser_rejects_cross_record_mismatch(
+    valid_result_payload: dict[str, Any],
+) -> None:
+    valid_result_payload["candidates"][0]["report_id"] = str(UUID(int=4))
+    payload = json.dumps(valid_result_payload).encode("utf-8")
+
+    with pytest.raises(ValueError, match="Candidates must belong"):
+        parse_candidate_extraction_result(payload)
 
 
 def test_schema_rejects_candidate_without_required_confidence(

@@ -12,6 +12,11 @@ with `python3 manual_model_check.py`.
 The local Python prototype can rasterize a selected PDF page with
 `rasterize_pdf_page`; this is not the final browser-side Canvas implementation.
 Redaction now requires a `CandidateExtractionResult` with a page-bound row
-inventory, specified by `candidate_extraction_result_schema_v1.json`. The trusted
-extraction-service producer is not implemented yet. Synthetic fixtures can satisfy
-the contract, but pages remain non-delivery-ready.
+inventory, serialized and parsed against
+`candidate_extraction_result_schema_v1.json`. The trusted
+Z4 extraction service is not implemented yet. The local in-memory PDF/PNG/JPEG
+entry point emits OCR text-line candidates for mandatory review, but always marks
+coverage incomplete; it cannot authorize redacted-page delivery. Extraction
+can separate a simple numeric value and unit when both are clear on one OCR line.
+It enforces the design's 25 MiB upload cap and 40-million-pixel page-raster limit;
+no extraction accuracy benchmark has been met.
