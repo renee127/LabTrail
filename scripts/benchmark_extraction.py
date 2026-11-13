@@ -190,7 +190,8 @@ def render(scores: dict[str, Score]) -> str:
         f"Generated {datetime.now():%Y-%m-%d} by `scripts/benchmark_extraction.py` "
         f"with Tesseract {pytesseract.get_tesseract_version()}.",
         "",
-        "The extractor is the conservative OCR-line prototype in `labtrail_extraction.py`. "
+        "The extractor is `labtrail_extraction.py`: native PDFs are read from their embedded "
+        "text layer (plus OCR for text drawn as images); scans and photos are read with OCR. "
         "Every report is synthetic (3 fictional labs × 3 results). Degraded conditions are "
         f"rendered with seeds {', '.join(map(str, DEGRADED_SEEDS))}, so each covers 27 result rows; "
         "native PDF conditions cover 9.",

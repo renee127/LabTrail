@@ -2,7 +2,7 @@
 
 Generated 2026-11-13 by `scripts/benchmark_extraction.py` with Tesseract 5.5.4.
 
-The extractor is the conservative OCR-line prototype in `labtrail_extraction.py`. Every report is synthetic (3 fictional labs × 3 results). Degraded conditions are rendered with seeds 1, 2, 3, so each covers 27 result rows; native PDF conditions cover 9.
+The extractor is `labtrail_extraction.py`: native PDFs are read from their embedded text layer (plus OCR for text drawn as images); scans and photos are read with OCR. Every report is synthetic (3 fictional labs × 3 results). Degraded conditions are rendered with seeds 1, 2, 3, so each covers 27 result rows; native PDF conditions cover 9.
 
 **Row exact** means value, unit, and reference range all match ground truth. The design target (NFR-09) is ≥ 98% for machine PDFs and ≥ 90% for scans/photos.
 

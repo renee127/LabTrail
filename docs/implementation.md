@@ -284,7 +284,7 @@ destroys the server's key half, so the share can never be opened again.
 |---|---|---|---|
 | Page coverage | Extraction service declares a page's rows complete | Patient confirms after deciding every line | OCR cannot prove it found every row; the patient already reviews each line against the page image |
 | Redaction leak check | Any masked token visible anywhere fails the page | Tokens inside granted rows are ignored by the text search; text inside masks still fails | Shared rows legitimately repeat tokens such as "mg/dL", which made every mixed page fail |
-| Extraction | Model-based extraction service | Local Tesseract OCR with preprocessing | Runs offline on synthetic data; measured in the benchmark |
+| Extraction | Model-based extraction service | Native PDFs: embedded text layer (exact), plus OCR for text drawn as images; scans and photos: local Tesseract OCR with preprocessing | Runs offline; the text layer avoids OCR misreads on electronic reports; measured in the benchmark |
 | Key management | Random master key wrapped by login and recovery keys | Record file encrypted directly with a passphrase-derived key | Shows patient-held keys without accounts or recovery |
 | Platform | Browser client with server zones | Single local Streamlit app | Keeps the slice end-to-end within the project timeline |
 | Grant service | Hosted blind store with distributed 5-second revocation leases | Local folder, one JSON file per grant; revocation is immediate | Same key-split and fail-closed behavior without hosting |
@@ -299,8 +299,8 @@ Status: **Built** works end to end in the demo; **Partial** works with the state
 | Req. | Summary | Status | Where | Tests |
 |---|---|---|---|---|
 | FR-01 | Upload PDF, PNG, JPEG | Built (25 MiB and pixel limits) | `app.ingest`, `extract_document_ocr_line_candidates` | extraction, smoke |
-| FR-02 | Register report metadata | Partial: lab, collection date, printed name; no report date, ordering clinician, or type | `suggest_report_metadata`, Upload page | workflow |
-| FR-03 | Extract candidate rows with location | Partial: analyte, value, unit, range, flag, page, box; no specimen type | `labtrail_extraction` | extraction, benchmark |
+| FR-02 | Register report metadata | Partial: suggested lab, collection date (ISO, day/month or month/day when unambiguous, month names), and printed name ("Patient Name:", "Name:", or "Mr./Mrs./Ms."), all confirmed by the patient; no report date, ordering clinician, or type | `suggest_report_metadata`, `parse_report_date`, Upload page | workflow, text layer |
+| FR-03 | Extract candidate rows with location | Partial: analyte, value, unit, range, flag, page, box, from the PDF text layer when present; no specimen type | `labtrail_extraction` | extraction, text layer, benchmark |
 | FR-04 | Map analytes to codes | Partial: 191 tests from the versioned table `reference/lab_tests.csv` suggested from printed names, abbreviations, and OCR look-alikes (ambiguous names are never guessed); patient chooses, or enters a new test name that is kept in their encrypted record and suggested on later uploads; internal codes, not LOINC | `suggest_analyte_code`, `load_analyte_table`, `add_custom_analyte` | workflow, smoke |
 | FR-05 | Deterministic unit outcomes | Built: unit rules for glucose and lipids; other tests are charted as reported only when every result shares one unit; text results ("Negative", "<0.5") are kept as printed and listed | `normalize_value`, `CONVERSION_FACTORS`, `plan_chart` | algorithms, workflow |
 | FR-06 | Duplicate detection | Partial: identical files skipped with a warning; duplicate results flagged on timeline | `app.ingest`, `find_duplicate_observation_groups` | algorithms |
@@ -326,12 +326,12 @@ Status: **Built** works end to end in the demo; **Partial** works with the state
 Test files: `tests/test_labtrail_algorithms.py` (algorithms), `test_labtrail_workflow.py`
 (workflow), `test_labtrail_extraction.py` (extraction), `test_labtrail_redaction.py`
 (redaction), `test_labtrail_vault.py` (vault), `test_share_payload_schema.py` and
-`test_candidate_extraction_schema.py` (schema), `test_app_smoke.py` (smoke). Extraction
+`test_candidate_extraction_schema.py` (schema), `test_app_smoke.py` (smoke), `test_text_layer_and_metadata.py` (text layer). Extraction
 accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
 
 ## 7. Validation summary
 
-- **205 automated tests** run on every push (GitHub Actions), including a test that
+- **237 automated tests** run on every push (GitHub Actions), including a test that
   drives the real app through upload, review, timeline, redacted share, and
   encrypted save.
 - **Extraction accuracy** (row exact: value, unit, and range all correct): 100% on
@@ -352,7 +352,10 @@ accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
 - OCR can misread a digit and still look plausible (3.1 read as 9.1). Mandatory
   patient review is the safeguard, not the extractor.
 - Text that OCR misses entirely is not in the line list, so it is not masked;
-  the patient's page confirmation is the safeguard.
+  the patient's page confirmation is the safeguard. Whole-page OCR skips sparse
+  text such as letterheads and right-hand header columns on scans and photos
+  (native PDFs are read from their text layer instead).
+- Barcodes and QR codes are images, not text, so they are never masked.
 - The benchmark uses one font and simulated scans; real reports vary more.
 - No accounts, hosted server, or recovery phrase. Share links work only where
   this app is reachable (on one machine, or a network you expose it to).

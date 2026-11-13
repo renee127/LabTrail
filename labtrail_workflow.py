@@ -294,30 +294,110 @@ def add_custom_analyte(
     return code, True
 
 
-def suggest_report_metadata(result: CandidateExtractionResult) -> ReportMetadataSuggestion:
-    """Pull lab name, patient name, and collection date hints from OCR lines."""
-    source_lab = None
-    patient_name = None
-    collected = None
-    first_page = sorted(
-        (c for c in result.candidates if c.page_number == 1),
-        key=lambda c: c.row_index,
+_NAME_LABEL = re.compile(
+    r"(?i)^(?:patient(?:'s)?\s*(?:full\s*)?name|patient|name)\s*[:\-]\s*(?P<rest>.+)$"
+)
+_SALUTATION = re.compile(r"(?i)^(?:mr|mrs|ms|miss|mx)\.?\s+(?P<rest>.+)$")
+# Words that start the next field when a report prints several on one line.
+_NAME_STOPWORDS = {
+    "age", "sex", "gender", "dob", "d.o.b.", "mrn", "id", "reg", "phone", "address",
+    "collected", "registered", "received", "reported", "referred", "date",
+}
+_COLLECTION_LABEL = re.compile(
+    r"(?i)^(?:specimen\s+|sample\s+)?(?:date\s+(?:of\s+)?collect(?:ed|ion)|"
+    r"collect(?:ed|ion)(?:\s+date)?(?:\s+on)?)\s*[:\-]?\s*(?P<rest>.+)$"
+)
+_MONTHS = {
+    m: i for i, m in enumerate(
+        ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"),
+        start=1,
     )
-    if first_page:
-        source_lab = first_page[0].raw_analyte_name.strip() or None
-    for candidate in result.candidates:
-        text = candidate.raw_analyte_name.strip()
-        patient_match = re.match(r"(?i)^patient\s*:\s*(.+)$", text)
-        if patient_match and patient_name is None:
-            patient_name = patient_match.group(1).strip()
-        date_match = re.match(
-            r"(?i)^collect(?:ed|ion date)\s*:\s*(\d{4}-\d{2}-\d{2})$", text
-        )
-        if date_match and collected is None:
-            try:
-                collected = date.fromisoformat(date_match.group(1))
-            except ValueError:
-                pass
+}
+
+
+def _clean_person_name(text: str) -> str | None:
+    """Keep the leading name words; stop at the next field or OCR noise."""
+    words: list[str] = []
+    for token in text.split():
+        bare = token.strip(",;:")
+        if bare.lower() in _NAME_STOPWORDS or not re.fullmatch(r"[A-Za-z][A-Za-z'.\-]*", bare):
+            break
+        # In a Title Case name, an all-capitals word is usually OCR noise or a code;
+        # single-letter initials ("Q.") are not.
+        letters = re.sub(r"[^A-Za-z]", "", bare)
+        if words and not words[0].isupper() and letters.isupper() and len(letters) > 1:
+            break
+        words.append(bare)
+        if len(words) == 5:
+            break
+    name = " ".join(words)
+    return name if len(words) >= 1 and len(name) >= 2 else None
+
+
+def parse_report_date(text: str) -> date | None:
+    """Parse the first date in text; return None when it is missing or ambiguous.
+
+    Day/month order is only inferred when one part is above 12 (17/10/2024 is
+    17 October). A date such as 05/06/2024 could be 5 June or May 6, so it is left
+    for the patient to enter rather than guessed.
+    """
+    def build(year: int, month: int, day: int) -> date | None:
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    if m := re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", text):
+        return build(int(m[1]), int(m[2]), int(m[3]))
+    if m := re.search(r"\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})\b", text):
+        first, second, year = int(m[1]), int(m[2]), int(m[3])
+        if first > 12 >= second:
+            return build(year, second, first)
+        if second > 12 >= first:
+            return build(year, first, second)
+        if first == second:
+            return build(year, first, second)
+        return None
+    if m := re.search(r"\b(\d{1,2})[\s\-]([A-Za-z]{3,9})[\s\-,]+(\d{4})\b", text):
+        month = _MONTHS.get(m[2][:3].lower())
+        return build(int(m[3]), month, int(m[1])) if month else None
+    if m := re.search(r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})\b", text):
+        month = _MONTHS.get(m[1][:3].lower())
+        return build(int(m[3]), month, int(m[2])) if month else None
+    return None
+
+
+def suggest_report_metadata(result: CandidateExtractionResult) -> ReportMetadataSuggestion:
+    """Pull lab name, patient name, and collection date hints from extracted lines.
+
+    These are only suggestions shown on the confirmation form; the patient checks
+    and corrects them. Labelled names ("Patient Name: ...") are preferred over a
+    bare "Mr./Mrs./Ms." line, and the earliest line on the page wins, so staff
+    signatures at the bottom are not mistaken for the patient.
+    """
+    ordered = sorted(
+        result.candidates,
+        key=lambda c: (c.page_number, c.bounding_box[1] if c.bounding_box else 2.0, c.row_index),
+    )
+    first_page = [c for c in ordered if c.page_number == 1]
+    source_lab = first_page[0].raw_analyte_name.strip() or None if first_page else None
+
+    patient_name = None
+    for pattern in (_NAME_LABEL, _SALUTATION):
+        for candidate in ordered:
+            match = pattern.match(line_text(candidate).strip())
+            if match and (name := _clean_person_name(match["rest"])):
+                patient_name = name
+                break
+        if patient_name:
+            break
+
+    collected = None
+    for candidate in ordered:
+        match = _COLLECTION_LABEL.match(line_text(candidate).strip())
+        if match and (parsed := parse_report_date(match["rest"])):
+            collected = parsed
+            break
     return ReportMetadataSuggestion(source_lab, patient_name, collected)
 
 
