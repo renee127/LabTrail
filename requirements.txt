@@ -1,0 +1,11 @@
+# Runtime dependencies for the LabTrail app (used by Streamlit Community Cloud).
+# System package: Tesseract OCR, listed in packages.txt.
+streamlit>=1.40,<2
+pandas>=2,<4
+altair>=5,<7
+numpy>=2,<3
+Pillow>=11,<13
+pypdfium2>=4.30,<5
+pytesseract>=0.3.10,<0.4
+jsonschema>=4.21,<5
+cryptography>=44,<47

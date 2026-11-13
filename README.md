@@ -52,6 +52,7 @@
       <ul>
         <li><a href="#prerequisites">Prerequisites</a></li>
         <li><a href="#installation">Installation</a></li>
+        <li><a href="#deploy-to-streamlit-community-cloud">Deploy to Streamlit Community Cloud</a></li>
       </ul>
     </li>
     <li><a href="#usage">Usage</a></li>
@@ -188,6 +189,29 @@ diagrams, plus requirement-by-requirement coverage, are in
    It opens at <http://localhost:8501>. If `streamlit` is not on your `PATH`, use
    `python3 -m streamlit run app.py`.
 
+### Deploy to Streamlit Community Cloud
+
+The repository is ready to deploy as is:
+
+| File | Purpose |
+| :--- | :--- |
+| `requirements.txt` | Runtime Python packages (installed by Streamlit Cloud) |
+| `packages.txt` | System packages: `tesseract-ocr` |
+| `.streamlit/config.toml` | 25 MB upload limit, matching the app |
+
+1. At [share.streamlit.io](https://share.streamlit.io), choose **Create app** and select
+   this repository, branch `main`, main file `app.py`.
+2. Under **Advanced settings**, choose **Python 3.13** (the version CI tests).
+3. Deploy. The CI job `deploy-check` installs only `requirements.txt` and `packages.txt`
+   and starts the app, so a green badge means the deployment set is complete.
+
+> [!WARNING]
+> On a hosted Streamlit app, uploads, OCR, decryption, and the link's key half are
+> processed on the host's servers, which the design reserves for the patient's browser.
+> Use **synthetic data only** and consider making the app private (Settings → Sharing).
+> Sent shares are stored in the app's folder and are lost whenever the app restarts or
+> wakes from sleep.
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- USAGE -->
@@ -323,8 +347,11 @@ known problems.
 <!-- LIMITATIONS -->
 ## Limitations
 
-* **Prototype scope.** No accounts or hosted server; the grant service is a local folder
-  (`.labtrail_server/`), so share links work only where this app is reachable.
+* **Prototype scope.** No accounts or dedicated server; the grant service is a folder
+  (`.labtrail_server/`) inside the app, so share links work only where the app is
+  reachable, and on Streamlit Community Cloud they are lost when the app restarts.
+* **Hosted demo.** When deployed to Streamlit Community Cloud, data is processed on the
+  host's servers, not in the patient's browser as the design requires.
 * **Link key placement.** The design keeps the link's key half in the URL fragment (`#`);
   Streamlit cannot read fragments, so the demo uses a query parameter.
 * **OCR coverage.** On scans and photos, text that OCR skips entirely is not in the line list

@@ -361,3 +361,6 @@ accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
   this app is reachable (on one machine, or a network you expose it to).
 - A share already sent is not updated when the patient retracts a value; the
   patient must revoke and send a new one.
+- On Streamlit Community Cloud, uploads, OCR, decryption, and the link's key half
+  are processed on the host's servers (the design keeps them in the patient's
+  browser), and sent shares are lost when the app restarts.

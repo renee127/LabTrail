@@ -1,0 +1,6 @@
+[server]
+# Matches the app's own 25 MiB upload limit (Streamlit's default is 200 MB).
+maxUploadSize = 25
+
+[browser]
+gatherUsageStats = false

@@ -13,10 +13,40 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: requirements-dev.txt
-      - name: Install Tesseract OCR
-        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install system packages (packages.txt)
+        run: sudo apt-get update && xargs -a packages.txt sudo apt-get install -y
       - name: Install Python dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Run tests
         run: python -m pytest -q
+
+  deploy-check:
+    # Mirrors Streamlit Community Cloud: only requirements.txt and packages.txt,
+    # then loads the app and the demo samples headlessly.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install system packages (packages.txt)
+        run: sudo apt-get update && xargs -a packages.txt sudo apt-get install -y
+      - name: Install runtime dependencies only
+        run: python -m pip install -r requirements.txt
+      - name: Start the app and load the samples
+        run: |
+          python - <<'PY'
+          from streamlit.testing.v1 import AppTest
+          at = AppTest.from_file("app.py", default_timeout=120).run()
+          assert not at.exception, at.exception
+          next(b for b in at.button if b.label.startswith("Load 3 synthetic")).click()
+          at.run()
+          assert not at.exception, at.exception
+          assert len(at.session_state["reports"]) == 3
+          print("App starts and processes the samples with runtime dependencies only.")
+          PY
