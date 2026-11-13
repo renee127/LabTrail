@@ -53,6 +53,7 @@
         <li><a href="#prerequisites">Prerequisites</a></li>
         <li><a href="#installation">Installation</a></li>
         <li><a href="#deploy-to-streamlit-community-cloud">Deploy to Streamlit Community Cloud</a></li>
+        <li><a href="#keep-shares-across-restarts-optional">Keep Shares Across Restarts (optional)</a></li>
       </ul>
     </li>
     <li><a href="#usage">Usage</a></li>
@@ -209,8 +210,29 @@ The repository is ready to deploy as is:
 > On a hosted Streamlit app, uploads, OCR, decryption, and the link's key half are
 > processed on the host's servers, which the design reserves for the patient's browser.
 > Use **synthetic data only** and consider making the app private (Settings → Sharing).
-> Sent shares are stored in the app's folder and are lost whenever the app restarts or
-> wakes from sleep.
+
+### Keep Shares Across Restarts (optional)
+
+By default, sent shares are stored in a folder inside the app, which Streamlit Cloud
+clears whenever the app restarts, redeploys, or wakes from sleep. To keep share links
+working, store them in a free Postgres database instead:
+
+1. Create a database at [Supabase](https://supabase.com) or [Neon](https://neon.tech).
+   * Supabase: **Connect** → copy the **Session pooler** connection string (it works over
+     IPv4; the direct connection does not on the free plan) and insert your password.
+   * Neon: copy the connection string (it includes `sslmode=require`).
+2. In Streamlit Cloud, open the app's **Settings → Secrets** and add:
+   ```toml
+   LABTRAIL_DATABASE_URL = "postgresql://USER:PASSWORD@HOST:5432/postgres"
+   ```
+3. Save. The app restarts, creates its `labtrail_grants` table, and the Share page shows
+   *"Shares are stored in a postgresql database (persistent)."*
+
+The database holds only what the grant service needs: ciphertext, the server's key half,
+a hash of the recipient's email, a hash of the access code, status, and the access log.
+It cannot decrypt a share without the key half carried in the link. Expired shares have
+their key half destroyed when the Share page next opens. To run locally against a
+database, set the same `LABTRAIL_DATABASE_URL` environment variable.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -353,9 +375,9 @@ known problems.
 <!-- LIMITATIONS -->
 ## Limitations
 
-* **Prototype scope.** No accounts or dedicated server; the grant service is a folder
-  (`.labtrail_server/`) inside the app, so share links work only where the app is
-  reachable, and on Streamlit Community Cloud they are lost when the app restarts.
+* **Prototype scope.** No accounts or dedicated server; the grant service runs inside
+  the app. Without a database (`LABTRAIL_DATABASE_URL`), shares live in a local folder and
+  are lost when a hosted app restarts.
 * **Hosted demo.** When deployed to Streamlit Community Cloud, data is processed on the
   host's servers, not in the patient's browser as the design requires.
 * **Link key placement.** The design keeps the link's key half in the URL fragment (`#`);

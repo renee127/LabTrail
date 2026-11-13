@@ -26,7 +26,7 @@ flowchart TB
         algorithms["labtrail_algorithms.py<br/>review queue, normalization,<br/>comparability, share selection"]
         redaction["labtrail_redaction.py<br/>flattened page masking<br/>+ OCR leak check"]
         sharing["labtrail_sharing.py<br/>AES-256-GCM bundle, XOR key split,<br/>code check, revocation"]
-        server[("ShareServer<br/>local folder stand-in:<br/>ciphertext + server key half<br/>+ hash-chained access log")]
+        server[("ShareServer<br/>folder or Postgres:<br/>ciphertext + server key half<br/>+ hash-chained access log")]
         vault["labtrail_vault.py<br/>Argon2id + AES-256-GCM<br/>record file"]
         models["models.py<br/>domain classes"]
         schemas[("JSON schemas<br/>extraction result v1<br/>share payload v1")]
@@ -287,7 +287,7 @@ destroys the server's key half, so the share can never be opened again.
 | Extraction | Model-based extraction service | Native PDFs: embedded text layer (exact), plus OCR for text drawn as images; scans and photos: local Tesseract OCR with preprocessing | Runs offline; the text layer avoids OCR misreads on electronic reports; measured in the benchmark |
 | Key management | Random master key wrapped by login and recovery keys | Record file encrypted directly with a passphrase-derived key | Shows patient-held keys without accounts or recovery |
 | Platform | Browser client with server zones | Single local Streamlit app | Keeps the slice end-to-end within the project timeline |
-| Grant service | Hosted blind store with distributed 5-second revocation leases | Local folder, one JSON file per grant; revocation is immediate | Same key-split and fail-closed behavior without hosting |
+| Grant service | Hosted blind store with distributed 5-second revocation leases | Runs inside the app; stores grants in Postgres when `LABTRAIL_DATABASE_URL` is set (row-locked transactions), otherwise a local folder; revocation is immediate; expired keys swept | Same key-split and fail-closed behavior without a separate service |
 | Link key half | In the URL fragment (`#`), never sent to any server | In a query parameter (`?k=`) | Streamlit cannot read fragments; the grant service code still never receives it |
 | Recipient check | Grant credential plus out-of-band second factor | Link plus recipient email and a 6-digit code; 5 failures lock the share | Matches FR-22 with a code the patient can read aloud |
 
@@ -331,7 +331,7 @@ accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
 
 ## 7. Validation summary
 
-- **237 automated tests** run on every push (GitHub Actions), including a test that
+- **258 automated tests** run on every push (GitHub Actions), including a test that
   drives the real app through upload, review, timeline, redacted share, and
   encrypted save.
 - **Extraction accuracy** (row exact: value, unit, and range all correct): 100% on
@@ -363,4 +363,4 @@ accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
   patient must revoke and send a new one.
 - On Streamlit Community Cloud, uploads, OCR, decryption, and the link's key half
   are processed on the host's servers (the design keeps them in the patient's
-  browser), and sent shares are lost when the app restarts.
+  browser). Without a configured database, sent shares are lost when the app restarts.

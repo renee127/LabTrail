@@ -9,3 +9,5 @@ pypdfium2>=4.30,<5
 pytesseract>=0.3.10,<0.4
 jsonschema>=4.21,<5
 cryptography>=44,<47
+sqlalchemy>=2,<3
+psycopg[binary]>=3.2,<4

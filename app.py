@@ -5,6 +5,7 @@ Synthetic data only. Everything lives in this browser session's memory; nothing
 is encrypted or stored on a server in this demo.
 """
 
+import os
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO
@@ -555,8 +556,17 @@ _STATUS_LABELS = {
 }
 
 
+@st.cache_resource(show_spinner=False)
+def _cached_server(database_url: str | None, server_dir: str | None) -> ShareServer:
+    """One grant service (and database connection pool) for the app's lifetime."""
+    return ShareServer(root=Path(server_dir) if server_dir else None, database_url=database_url)
+
+
 def _server() -> ShareServer:
-    return ShareServer()
+    # On Streamlit Community Cloud, top-level secrets are also environment variables.
+    return _cached_server(
+        os.environ.get("LABTRAIL_DATABASE_URL"), os.environ.get("LABTRAIL_SERVER_DIR")
+    )
 
 
 def _base_url() -> str:
@@ -645,6 +655,10 @@ def _sent_shares_panel() -> None:
         return
     st.subheader("Sent shares")
     server, now = _server(), _now()
+    expired = server.sweep_expired(now)
+    if expired:
+        _log(f"{expired} expired share(s) closed; their keys were destroyed")
+    st.caption(f"Shares are stored in a {server.store.description}.")
     for record in reversed(ss.sent_shares):
         grant_id = UUID(record["grant_id"])
         try:
@@ -744,8 +758,8 @@ def page_share() -> None:
         _show_sent(ss.last_sent)
     _sent_shares_panel()
     st.caption(
-        "Demo limits: the grant service is a local folder, the link carries its key half in a "
-        "query parameter instead of the URL fragment, and nothing is emailed automatically."
+        "Demo limits: the grant service runs inside this app, the link carries its key half "
+        "in a query parameter instead of the URL fragment, and nothing is emailed automatically."
     )
 
 

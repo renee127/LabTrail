@@ -1,5 +1,6 @@
 """End-to-end smoke test of the Streamlit demo using the synthetic samples."""
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from labtrail_workflow import SIDEBAR_NOTICE, find_interpretive_language
@@ -34,8 +35,13 @@ def _assert_no_interpretation(at: AppTest, page: str) -> None:
     assert not found, f"Interpretive language on {page}: {found}"
 
 
-def test_upload_confirm_review_timeline_share(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("storage", ["folder", "database"])
+def test_upload_confirm_review_timeline_share(tmp_path, monkeypatch, storage) -> None:
     monkeypatch.setenv("LABTRAIL_SERVER_DIR", str(tmp_path))
+    if storage == "database":
+        monkeypatch.setenv("LABTRAIL_DATABASE_URL", f"sqlite:///{tmp_path / 'grants.db'}")
+    else:
+        monkeypatch.delenv("LABTRAIL_DATABASE_URL", raising=False)
     at = AppTest.from_file("../app.py", default_timeout=120)
     at.run()
     _click(at, "Load 3 synthetic sample reports")
@@ -109,6 +115,8 @@ def test_upload_confirm_review_timeline_share(tmp_path, monkeypatch) -> None:
     sent = at.session_state["last_sent"]
     assert "?share=" in sent["link"] and len(sent["code"]) == 6
     assert any("Active" in m.value for m in at.markdown)
+    expected_store = "sqlite database (persistent)" if storage == "database" else "local folder"
+    assert any(expected_store in c.value for c in at.caption)
     _assert_no_interpretation(at, "Share/sent")
 
     # --- Clinician opens the link in a separate session
