@@ -1,12 +1,14 @@
 """Pure algorithms that operate on LabTrail domain objects."""
 
+import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from math import isfinite
 from typing import Literal
+from uuid import UUID
 
 from models import (
     AcceptedObservation,
@@ -29,6 +31,12 @@ ComparabilityAttribute = Literal[
     "reference_interval",
 ]
 ReviewRouting = Literal["STANDARD_REVIEW", "MANDATORY_EXCEPTION_REVIEW"]
+SharePageDisposition = Literal[
+    "WITHHOLD_REGION_UNAVAILABLE",
+    "REDACTION_REQUIRED",
+]
+ComparabilityStatus = Literal["NOT_EVALUATED", "COMPARED"]
+SHARE_PAYLOAD_SCHEMA_VERSION = "1"
 
 
 @dataclass(frozen=True)
@@ -53,6 +61,85 @@ class ConversionResult:
     conversion_outcome: ConversionOutcome
     unconvertible_reason: str | None
     rule_version: str
+
+
+@dataclass(frozen=True)
+class ShareSourcePagePlan:
+    """A page reference that must be withheld or redacted before sharing."""
+
+    report_id: UUID
+    page_number: int
+    observation_ids: tuple[UUID, ...]
+    disposition: SharePageDisposition
+
+
+@dataclass(frozen=True)
+class ShareContentSelection:
+    """Grant-scoped in-memory selection, not an encrypted or publishable bundle.
+
+    The selected domain records remain mutable; encryption requires a separate,
+    explicit payload projection and verified redacted page bytes.
+    """
+
+    grant_id: UUID
+    granted_analytes: tuple[str, ...]
+    range_start: date
+    range_end: date
+    observations: tuple[AcceptedObservation, ...]
+    context_notes: tuple[ContextNote, ...]
+    source_pages: tuple[ShareSourcePagePlan, ...]
+
+
+@dataclass(frozen=True)
+class ShareObservationPayloadV1:
+    observation_id: str
+    analyte_code: str
+    canonical_value: str | None
+    canonical_unit: str | None
+    original_value: str
+    original_unit: str
+    conversion_factor: str | None
+    conversion_outcome: str
+    unconvertible_reason: str | None
+    reference_interval: str | None
+    method_note: str | None
+    source_lab: str
+    collection_datetime: str
+    source_report_id: str
+    source_page_number: int
+    source_bounding_box: tuple[float, float, float, float] | None
+    source_page_status: SharePageDisposition
+    review_status: Literal["ACCEPTED"]
+    reviewed_at: str
+    provenance_flag: str
+    rule_version: str
+    comparability_status: ComparabilityStatus
+    comparability_previous_observation_id: str | None
+    comparability_changes: tuple[ComparabilityAttribute, ...] | None
+
+
+@dataclass(frozen=True)
+class ShareContextNotePayloadV1:
+    note_id: str
+    category: str
+    note_date: str
+    body: str
+    analyte_codes: tuple[str, ...]
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class SharePayloadProjectionV1:
+    """Versioned structured payload projection; redacted pages are not included."""
+
+    schema_version: str
+    grant_id: str
+    granted_analytes: tuple[str, ...]
+    range_start: str
+    range_end: str
+    observations: tuple[ShareObservationPayloadV1, ...]
+    context_notes: tuple[ShareContextNotePayloadV1, ...]
 
 
 def partition_review_queue(
@@ -270,6 +357,213 @@ def filter_context_notes_for_grant(
         if grant.range_start <= note.note_date <= grant.range_end
         and set(note.analyte_codes).issubset(analyte_scope)
     ]
+
+
+def prepare_share_content_selection(
+    *,
+    observations: Iterable[AcceptedObservation],
+    notes: Iterable[ContextNote],
+    grant: ClientShareGrant,
+    as_of: datetime,
+) -> ShareContentSelection:
+    """Select content for a grant being prepared or rebuilt on the client.
+
+    Source pages are never included: pages with missing granted-row regions are
+    withheld, and all other referenced pages still require verified redaction.
+    Observation input order is preserved for any later comparability calculation.
+    """
+    if grant.local_status not in {"PREPARING_CLIENT", "BUNDLE_REFRESHED"}:
+        raise ValueError("Only a new or refreshed client grant can be prepared.")
+    if (as_of.utcoffset() is None) != (grant.created_at.utcoffset() is None):
+        raise ValueError(
+            "Preparation time and grant timestamps must use compatible timezones."
+        )
+    if not grant.created_at <= as_of < grant.expires_at:
+        raise ValueError("Grant is not within its preparation validity period.")
+
+    selected_observations = tuple(filter_observations_for_grant(observations, grant))
+    selected_notes = tuple(filter_context_notes_for_grant(notes, grant))
+
+    page_observations: defaultdict[
+        tuple[UUID, int], list[AcceptedObservation]
+    ] = defaultdict(list)
+    for observation in selected_observations:
+        page_observations[(observation.report_id, observation.page_number)].append(
+            observation
+        )
+
+    source_pages = tuple(
+        ShareSourcePagePlan(
+            report_id=report_id,
+            page_number=page_number,
+            observation_ids=tuple(
+                observation.observation_id for observation in page_records
+            ),
+            disposition=(
+                "WITHHOLD_REGION_UNAVAILABLE"
+                if any(record.bounding_box is None for record in page_records)
+                else "REDACTION_REQUIRED"
+            ),
+        )
+        for (report_id, page_number), page_records in sorted(
+            page_observations.items(),
+            key=lambda item: (item[0][0].hex, item[0][1]),
+        )
+    )
+    return ShareContentSelection(
+        grant_id=grant.grant_id,
+        granted_analytes=tuple(grant.granted_analytes),
+        range_start=grant.range_start,
+        range_end=grant.range_end,
+        observations=selected_observations,
+        context_notes=selected_notes,
+        source_pages=source_pages,
+    )
+
+
+def build_share_payload_projection(
+    selection: ShareContentSelection,
+    *,
+    comparability_predecessors: Mapping[UUID, UUID] | None = None,
+) -> SharePayloadProjectionV1:
+    """Project selected records into explicit v1 fields without serializing pages.
+
+    Mapped comparability pairs must be adjacent for that analyte in selection order.
+    An unmapped observation is marked NOT_EVALUATED, never as an unchanged result.
+    """
+    observations_by_id = {
+        observation.observation_id: observation
+        for observation in selection.observations
+    }
+    if len(observations_by_id) != len(selection.observations):
+        raise ValueError("Share selection contains duplicate observation identifiers.")
+
+    page_status_by_observation_id: dict[UUID, SharePageDisposition] = {}
+    for page in selection.source_pages:
+        for observation_id in page.observation_ids:
+            observation = observations_by_id.get(observation_id)
+            if observation is None or (
+                observation.report_id != page.report_id
+                or observation.page_number != page.page_number
+            ):
+                raise ValueError("Source-page plans must reference selected observations.")
+            if observation_id in page_status_by_observation_id:
+                raise ValueError("An observation cannot have multiple source-page plans.")
+            page_status_by_observation_id[observation_id] = page.disposition
+    if set(page_status_by_observation_id) != set(observations_by_id):
+        raise ValueError("Every selected observation requires a source-page plan.")
+
+    observations_by_analyte: defaultdict[
+        str, list[AcceptedObservation]
+    ] = defaultdict(list)
+    for observation in selection.observations:
+        observations_by_analyte[observation.analyte_code].append(observation)
+    positions_by_id = {
+        observation.observation_id: index
+        for analyte_observations in observations_by_analyte.values()
+        for index, observation in enumerate(analyte_observations)
+    }
+
+    predecessors = comparability_predecessors or {}
+    comparison_changes: dict[UUID, tuple[ComparabilityAttribute, ...]] = {}
+    for observation_id, previous_id in predecessors.items():
+        observation = observations_by_id.get(observation_id)
+        previous = observations_by_id.get(previous_id)
+        if observation is None or previous is None:
+            raise ValueError("Comparability references must be in the share selection.")
+        if observation.analyte_code != previous.analyte_code:
+            raise ValueError("Comparability references must use the same analyte.")
+        if positions_by_id[previous_id] != positions_by_id[observation_id] - 1:
+            raise ValueError(
+                "Comparability references must be adjacent in selection order."
+            )
+        comparison_changes[observation_id] = compare_adjacent_observations(
+            previous, observation
+        )
+
+    observation_payloads = tuple(
+        ShareObservationPayloadV1(
+            observation_id=str(observation.observation_id),
+            analyte_code=observation.analyte_code,
+            canonical_value=(
+                str(observation.canonical_value)
+                if observation.canonical_value is not None
+                else None
+            ),
+            canonical_unit=observation.canonical_unit,
+            original_value=observation.original_value,
+            original_unit=observation.original_unit,
+            conversion_factor=(
+                str(observation.conversion_factor)
+                if observation.conversion_factor is not None
+                else None
+            ),
+            conversion_outcome=observation.conversion_outcome,
+            unconvertible_reason=observation.unconvertible_reason,
+            reference_interval=observation.reference_interval,
+            method_note=observation.method_note,
+            source_lab=observation.source_lab,
+            collection_datetime=observation.collection_datetime.isoformat(),
+            source_report_id=str(observation.report_id),
+            source_page_number=observation.page_number,
+            source_bounding_box=observation.bounding_box,
+            source_page_status=page_status_by_observation_id[
+                observation.observation_id
+            ],
+            review_status="ACCEPTED",
+            reviewed_at=observation.accepted_at.isoformat(),
+            provenance_flag=observation.provenance_flag,
+            rule_version=observation.rule_version,
+            comparability_status=(
+                "COMPARED"
+                if observation.observation_id in comparison_changes
+                else "NOT_EVALUATED"
+            ),
+            comparability_previous_observation_id=(
+                str(predecessors[observation.observation_id])
+                if observation.observation_id in predecessors
+                else None
+            ),
+            comparability_changes=comparison_changes.get(
+                observation.observation_id
+            ),
+        )
+        for observation in selection.observations
+    )
+    note_payloads = tuple(
+        ShareContextNotePayloadV1(
+            note_id=str(note.note_id),
+            category=note.category,
+            note_date=note.note_date.isoformat(),
+            body=note.body,
+            analyte_codes=tuple(note.analyte_codes),
+            created_at=note.created_at.isoformat(),
+            updated_at=note.updated_at.isoformat(),
+        )
+        for note in selection.context_notes
+    )
+    return SharePayloadProjectionV1(
+        schema_version=SHARE_PAYLOAD_SCHEMA_VERSION,
+        grant_id=str(selection.grant_id),
+        granted_analytes=selection.granted_analytes,
+        range_start=selection.range_start.isoformat(),
+        range_end=selection.range_end.isoformat(),
+        observations=observation_payloads,
+        context_notes=note_payloads,
+    )
+
+
+def serialize_share_payload_projection(
+    payload: SharePayloadProjectionV1,
+) -> bytes:
+    """Serialize a structured projection deterministically as compact UTF-8 JSON."""
+    return json.dumps(
+        asdict(payload),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
 
 
 def group_observations_by_collection_day(

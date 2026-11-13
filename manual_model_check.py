@@ -3,14 +3,17 @@
 Run with: python manual_model_check.py
 """
 
+import json
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
+from pathlib import Path
 from pprint import pprint
 from uuid import UUID
 
 from labtrail_algorithms import (
+    build_share_payload_projection,
     classify_candidate_routing,
     compare_adjacent_observations,
     filter_context_notes_for_grant,
@@ -20,6 +23,8 @@ from labtrail_algorithms import (
     group_observations_by_collection_day,
     normalize_value,
     partition_review_queue,
+    prepare_share_content_selection,
+    serialize_share_payload_projection,
 )
 from models import (
     AcceptedObservation,
@@ -366,6 +371,51 @@ def main() -> None:
         (note, mixed_scope_note, out_of_range_note),
         grant,
     )
+    preparing_grant = replace(grant, local_status="PREPARING_CLIENT")
+    share_selection = prepare_share_content_selection(
+        observations=(
+            observation,
+            out_of_scope_observation,
+            retracted_observation,
+            out_of_range_observation,
+        ),
+        notes=(note, mixed_scope_note, out_of_range_note),
+        grant=preparing_grant,
+        as_of=now,
+    )
+    missing_region_selection = prepare_share_content_selection(
+        observations=(
+            replace(observation, bounding_box=None),
+        ),
+        notes=(),
+        grant=preparing_grant,
+        as_of=now,
+    )
+    share_payload = build_share_payload_projection(share_selection)
+    serialized_share_payload = serialize_share_payload_projection(share_payload)
+    decoded_share_payload = json.loads(serialized_share_payload)
+    share_payload_schema = json.loads(
+        Path(__file__)
+        .with_name("share_payload_schema_v1.json")
+        .read_text(encoding="utf-8")
+    )
+    withheld_payload = build_share_payload_projection(missing_region_selection)
+    comparability_grant = replace(
+        preparing_grant,
+        granted_analytes=["SYNTHETIC_ANALYTE"],
+    )
+    comparability_selection = prepare_share_content_selection(
+        observations=(converted_observation, direct_observation),
+        notes=(),
+        grant=comparability_grant,
+        as_of=now,
+    )
+    comparability_payload = build_share_payload_projection(
+        comparability_selection,
+        comparability_predecessors={
+            direct_observation.observation_id: converted_observation.observation_id
+        },
+    )
 
     samples = (
         patient,
@@ -419,6 +469,70 @@ def main() -> None:
     )
     assert shared_observations == [observation]
     assert shared_notes == [note]
+    assert share_selection.observations == (observation,)
+    assert share_selection.context_notes == (note,)
+    assert len(share_selection.source_pages) == 1
+    assert share_selection.source_pages[0].disposition == "REDACTION_REQUIRED"
+    assert (
+        missing_region_selection.source_pages[0].disposition
+        == "WITHHOLD_REGION_UNAVAILABLE"
+    )
+    assert share_payload.schema_version == "1"
+    assert share_payload.observations[0].comparability_status == "NOT_EVALUATED"
+    assert decoded_share_payload["schema_version"] == "1"
+    assert decoded_share_payload["observations"][0]["review_status"] == "ACCEPTED"
+    assert (
+        decoded_share_payload["observations"][0]["source_page_status"]
+        == "REDACTION_REQUIRED"
+    )
+    assert (
+        withheld_payload.observations[0].source_page_status
+        == "WITHHOLD_REGION_UNAVAILABLE"
+    )
+    assert set(share_payload_schema["required"]) == set(decoded_share_payload)
+    assert set(share_payload_schema["$defs"]["observation"]["required"]) == set(
+        decoded_share_payload["observations"][0]
+    )
+    assert set(share_payload_schema["$defs"]["context_note"]["required"]) == set(
+        decoded_share_payload["context_notes"][0]
+    )
+    assert (
+        share_payload_schema["properties"]["schema_version"]["const"]
+        == share_payload.schema_version
+    )
+    assert serialized_share_payload == serialize_share_payload_projection(
+        share_payload
+    )
+    assert (
+        comparability_payload.observations[1].comparability_changes
+        == ("unit_basis",)
+    )
+    assert (
+        comparability_payload.observations[1].comparability_previous_observation_id
+        == str(converted_observation.observation_id)
+    )
+    try:
+        prepare_share_content_selection(
+            observations=(observation,),
+            notes=(note,),
+            grant=grant,
+            as_of=now,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An active grant must not prepare a new bundle.")
+    try:
+        prepare_share_content_selection(
+            observations=(observation,),
+            notes=(note,),
+            grant=preparing_grant,
+            as_of=preparing_grant.expires_at,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("An expired grant must not prepare a new bundle.")
 
     for sample in samples:
         print(f"{type(sample).__name__}:")
@@ -455,6 +569,19 @@ def main() -> None:
         f"{[item.observation_id for item in shared_observations]}"
     )
     print(f"Shared context-note IDs: {[item.note_id for item in shared_notes]}")
+    print(
+        "Share selection: "
+        f"{len(share_selection.observations)} observations, "
+        f"{len(share_selection.context_notes)} notes, "
+        f"{[page.disposition for page in share_selection.source_pages]}"
+    )
+    print(
+        "Share payload projection: "
+        f"schema={share_payload.schema_version}, "
+        f"bytes={len(serialized_share_payload)}, "
+        f"page={share_payload.observations[0].source_page_status}, "
+        f"comparability={comparability_payload.observations[1].comparability_changes}"
+    )
     print("Manual model and algorithm check passed.")
 
 
