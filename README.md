@@ -11,6 +11,7 @@ with `python3 manual_model_check.py`.
 
 The local Python prototype can rasterize a selected PDF page with
 `rasterize_pdf_page`; this is not the final browser-side Canvas implementation.
-The raster redaction prototype requires page-bound row-coverage evidence from an
-independent inventory; that producer is not implemented yet, so pages are not
-delivery-ready even when a synthetic test supplies matching evidence.
+Redaction now requires a `CandidateExtractionResult` with a page-bound row
+inventory, specified by `candidate_extraction_result_schema_v1.json`. The trusted
+extraction-service producer is not implemented yet. Synthetic fixtures can satisfy
+the contract, but pages remain non-delivery-ready.

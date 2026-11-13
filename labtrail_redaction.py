@@ -15,7 +15,12 @@ from pytesseract import Output
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from labtrail_algorithms import prepare_share_content_selection
-from models import AcceptedObservation, CandidateExtraction, ClientShareGrant
+from models import (
+    AcceptedObservation,
+    CandidateExtraction,
+    CandidateExtractionResult,
+    ClientShareGrant,
+)
 
 
 _MAX_RASTER_PIXELS = 40_000_000
@@ -47,47 +52,6 @@ class SourcePageRedactionResult:
                 raise ValueError("Withheld pages cannot contain image bytes.")
         elif self.redacted_png is None or self.withheld_reason is not None:
             raise ValueError("Redacted pages require PNG bytes and no withheld reason.")
-
-
-@dataclass(frozen=True)
-class PageRowCoverageEvidence:
-    """Page-bound row inventory supplied by a trusted extraction pipeline."""
-
-    report_id: UUID
-    page_number: int
-    extraction_job_id: UUID
-    source_page_sha256: str
-    expected_row_indices: tuple[int, ...]
-
-    def __post_init__(self) -> None:
-        if (
-            isinstance(self.page_number, bool)
-            or not isinstance(self.page_number, int)
-            or self.page_number < 1
-        ):
-            raise ValueError("Coverage evidence page number must be positive.")
-        if (
-            not isinstance(self.source_page_sha256, str)
-            or len(self.source_page_sha256) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in self.source_page_sha256
-            )
-        ):
-            raise ValueError("Coverage evidence requires a lowercase SHA-256 digest.")
-        if (
-            not isinstance(self.expected_row_indices, tuple)
-            or not self.expected_row_indices
-            or any(
-                isinstance(row_index, bool)
-                or not isinstance(row_index, int)
-                or row_index < 0
-                for row_index in self.expected_row_indices
-            )
-            or tuple(sorted(set(self.expected_row_indices)))
-            != self.expected_row_indices
-        ):
-            raise ValueError("Expected row indices must be unique, sorted, and non-negative.")
 
 
 def _withheld(
@@ -254,19 +218,18 @@ def redact_source_page(
     page_raster: bytes,
     report_id: UUID,
     page_number: int,
-    candidates: Iterable[CandidateExtraction],
+    extraction_result: CandidateExtractionResult,
     observations: Iterable[AcceptedObservation],
     grant: ClientShareGrant,
     as_of: datetime,
     region_confidence_threshold: float,
     mask_padding_pixels: int,
-    row_coverage_evidence: PageRowCoverageEvidence | None,
 ) -> SourcePageRedactionResult:
     """Mask every ungranted extracted row and emit a metadata-free PNG.
 
-    This prototype accepts an already-rasterized page. Coverage evidence must bind
-    an independent row inventory to the page and extraction job. No such inventory
-    producer exists here, and this result is never delivery-ready. OCR checks the
+    This prototype accepts an already-rasterized page and a validated extraction
+    result. The inventory is supplied by the extraction service; that service is
+    not implemented here, so this result is never delivery-ready. OCR checks the
     flattened output for candidate text but is not proof of OCR completeness.
     """
     if page_number < 1:
@@ -286,9 +249,32 @@ def redact_source_page(
         raise ValueError("Mask padding must be a non-negative integer.")
     if not isinstance(page_raster, bytes) or not page_raster:
         raise ValueError("Source page raster must be non-empty bytes.")
+    if not isinstance(extraction_result, CandidateExtractionResult):
+        raise ValueError("A validated candidate extraction result is required.")
+    if extraction_result.report_id != report_id:
+        raise ValueError("Extraction result must belong to the requested report.")
     source_page_sha256 = sha256(page_raster).hexdigest()
 
-    page_candidates = tuple(candidates)
+    page_inventory = next(
+        (
+            inventory
+            for inventory in extraction_result.page_inventories
+            if inventory.page_number == page_number
+        ),
+        None,
+    )
+    if (
+        page_inventory is None
+        or page_inventory.inventory_status != "COMPLETE"
+        or page_inventory.source_page_sha256 != source_page_sha256
+    ):
+        return _withheld(report_id, page_number, "ROW_COVERAGE_UNVERIFIED")
+
+    page_candidates = tuple(
+        candidate
+        for candidate in extraction_result.candidates
+        if candidate.page_number == page_number
+    )
     if not page_candidates:
         return _withheld(report_id, page_number, "ROW_COVERAGE_UNVERIFIED")
     if any(
@@ -303,7 +289,10 @@ def redact_source_page(
         for candidate in page_candidates
     ):
         return _withheld(report_id, page_number, "ROW_COVERAGE_UNVERIFIED")
-    if len({candidate.extraction_job_id for candidate in page_candidates}) != 1:
+    if any(
+        candidate.extraction_job_id != extraction_result.extraction_job_id
+        for candidate in page_candidates
+    ):
         return _withheld(report_id, page_number, "ROW_COVERAGE_UNVERIFIED")
     if len({candidate.candidate_id for candidate in page_candidates}) != len(
         page_candidates
@@ -313,20 +302,8 @@ def redact_source_page(
         page_candidates
     ):
         return _withheld(report_id, page_number, "ROW_COVERAGE_UNVERIFIED")
-    if (
-        row_coverage_evidence is not None
-        and not isinstance(row_coverage_evidence, PageRowCoverageEvidence)
-    ):
-        raise ValueError("Row coverage evidence has an invalid type.")
-    extraction_job_id = page_candidates[0].extraction_job_id
-    if (
-        row_coverage_evidence is None
-        or row_coverage_evidence.report_id != report_id
-        or row_coverage_evidence.page_number != page_number
-        or row_coverage_evidence.extraction_job_id != extraction_job_id
-        or row_coverage_evidence.source_page_sha256 != source_page_sha256
-        or row_coverage_evidence.expected_row_indices
-        != tuple(sorted(candidate.row_index for candidate in page_candidates))
+    if page_inventory.result_row_indices != tuple(
+        sorted(candidate.row_index for candidate in page_candidates)
     ):
         return _withheld(report_id, page_number, "ROW_COVERAGE_UNVERIFIED")
 

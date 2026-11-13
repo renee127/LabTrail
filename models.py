@@ -189,6 +189,110 @@ class CandidateExtraction:
             raise ValueError("Field confidence scores must be between 0 and 1.")
 
 
+@dataclass(frozen=True)
+class ExtractionPageInventory:
+    """Extractor-reported result-row indices and page-raster binding."""
+
+    page_number: int
+    source_page_sha256: str
+    result_row_indices: tuple[int, ...]
+    inventory_status: Literal["COMPLETE", "INCOMPLETE"]
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.page_number, bool)
+            or not isinstance(self.page_number, int)
+            or self.page_number < 1
+        ):
+            raise ValueError("Inventory page number must be positive.")
+        if not _is_sha256_hex_digest(self.source_page_sha256):
+            raise ValueError("Page inventory requires a lowercase SHA-256 digest.")
+        if (
+            not isinstance(self.result_row_indices, tuple)
+            or any(
+                isinstance(row_index, bool)
+                or not isinstance(row_index, int)
+                or row_index < 0
+                for row_index in self.result_row_indices
+            )
+            or tuple(sorted(set(self.result_row_indices)))
+            != self.result_row_indices
+        ):
+            raise ValueError("Inventory row indices must be unique, sorted, and non-negative.")
+        if not isinstance(self.inventory_status, str) or self.inventory_status not in {
+            "COMPLETE",
+            "INCOMPLETE",
+        }:
+            raise ValueError("Page inventory status is not recognized.")
+
+
+@dataclass(frozen=True)
+class CandidateExtractionResult:
+    """Structurally validated extraction response; not proof of extractor quality."""
+
+    report_id: UUID
+    extraction_job_id: UUID
+    candidates: tuple[CandidateExtraction, ...]
+    page_inventories: tuple[ExtractionPageInventory, ...]
+    schema_version: Literal["1"] = "1"
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "1":
+            raise ValueError("Candidate extraction result schema version is unsupported.")
+        if not isinstance(self.candidates, tuple) or not isinstance(
+            self.page_inventories, tuple
+        ):
+            raise ValueError("Extraction results require tuple collections.")
+        if any(
+            not isinstance(candidate, CandidateExtraction)
+            for candidate in self.candidates
+        ) or any(
+            not isinstance(inventory, ExtractionPageInventory)
+            for inventory in self.page_inventories
+        ):
+            raise ValueError("Extraction results contain invalid record types.")
+        inventory_by_page = {
+            inventory.page_number: inventory for inventory in self.page_inventories
+        }
+        if len(inventory_by_page) != len(self.page_inventories):
+            raise ValueError("Extraction result contains duplicate page inventories.")
+
+        candidates_by_page: dict[int, list[CandidateExtraction]] = {}
+        for candidate in self.candidates:
+            if (
+                candidate.report_id != self.report_id
+                or candidate.extraction_job_id != self.extraction_job_id
+            ):
+                raise ValueError("Candidates must belong to this extraction result.")
+            if (
+                isinstance(candidate.page_number, bool)
+                or not isinstance(candidate.page_number, int)
+                or candidate.page_number < 1
+                or isinstance(candidate.row_index, bool)
+                or not isinstance(candidate.row_index, int)
+                or candidate.row_index < 0
+            ):
+                raise ValueError("Candidate page and row indices must be valid integers.")
+            if candidate.page_number not in inventory_by_page:
+                raise ValueError("Every candidate page requires a page inventory.")
+            candidates_by_page.setdefault(candidate.page_number, []).append(candidate)
+
+        for page_number, inventory in inventory_by_page.items():
+            candidates = candidates_by_page.get(page_number, [])
+            row_indices = tuple(sorted(candidate.row_index for candidate in candidates))
+            if len(set(row_indices)) != len(row_indices):
+                raise ValueError("A page cannot contain duplicate candidate row indices.")
+            if not set(row_indices).issubset(inventory.result_row_indices):
+                raise ValueError("Candidate rows must appear in the page inventory.")
+            if (
+                inventory.inventory_status == "COMPLETE"
+                and row_indices != inventory.result_row_indices
+            ):
+                raise ValueError(
+                    "A complete page inventory must match all extracted candidate rows."
+                )
+
+
 @dataclass
 class AcceptedObservation:
     """Holds a patient-reviewed result with conversion and source provenance."""

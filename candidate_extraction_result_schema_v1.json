@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LabTrail CandidateExtractionResult v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_id",
+    "extraction_job_id",
+    "candidates",
+    "page_inventories"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "report_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "extraction_job_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
+    },
+    "page_inventories": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/page_inventory"
+      }
+    }
+  },
+  "$defs": {
+    "nullable_string": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "bounding_box": {
+      "oneOf": [
+        {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "report_id",
+        "extraction_job_id",
+        "row_index",
+        "raw_analyte_name",
+        "proposed_analyte_code",
+        "raw_value",
+        "raw_unit",
+        "reference_interval",
+        "method_note",
+        "specimen_type",
+        "abnormal_flag",
+        "page_number",
+        "bounding_box",
+        "region_available",
+        "field_confidences",
+        "model_identifier",
+        "model_version",
+        "prompt_hash",
+        "extracted_at",
+        "routing_status",
+        "lifecycle_status"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "report_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "extraction_job_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "row_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "raw_analyte_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proposed_analyte_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "raw_value": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "raw_unit": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "reference_interval": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "method_note": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "specimen_type": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "abnormal_flag": {
+          "$ref": "#/$defs/nullable_string"
+        },
+        "page_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "bounding_box": {
+          "$ref": "#/$defs/bounding_box"
+        },
+        "region_available": {
+          "type": "boolean"
+        },
+        "field_confidences": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "analyte",
+            "value",
+            "unit",
+            "region"
+          ],
+          "properties": {
+            "analyte": {
+              "$ref": "#/$defs/confidence"
+            },
+            "value": {
+              "$ref": "#/$defs/confidence"
+            },
+            "unit": {
+              "$ref": "#/$defs/confidence"
+            },
+            "region": {
+              "$ref": "#/$defs/confidence"
+            }
+          }
+        },
+        "model_identifier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "extracted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "routing_status": {
+          "enum": [
+            "STANDARD_REVIEW",
+            "MANDATORY_EXCEPTION_REVIEW"
+          ]
+        },
+        "lifecycle_status": {
+          "enum": [
+            "CANDIDATE",
+            "ACCEPTED",
+            "REJECTED",
+            "RETRACTED_BY_PATIENT"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "region_available": {
+                "const": true
+              }
+            },
+            "required": [
+              "region_available"
+            ]
+          },
+          "then": {
+            "properties": {
+              "bounding_box": {
+                "type": "array"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "bounding_box": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "page_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "page_number",
+        "source_page_sha256",
+        "result_row_indices",
+        "inventory_status"
+      ],
+      "properties": {
+        "page_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_page_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "result_row_indices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "inventory_status": {
+          "enum": [
+            "COMPLETE",
+            "INCOMPLETE"
+          ]
+        }
+      }
+    }
+  }
+}

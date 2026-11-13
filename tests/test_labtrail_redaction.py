@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
 from io import BytesIO
+from typing import Literal
 from uuid import UUID
 
 import pytesseract
@@ -9,11 +10,16 @@ import pytest
 from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
 
 from labtrail_redaction import (
-    PageRowCoverageEvidence,
     rasterize_pdf_page,
     redact_source_page,
 )
-from models import AcceptedObservation, CandidateExtraction, ClientShareGrant
+from models import (
+    AcceptedObservation,
+    CandidateExtraction,
+    CandidateExtractionResult,
+    ClientShareGrant,
+    ExtractionPageInventory,
+)
 
 
 NOW = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
@@ -144,31 +150,41 @@ def _redact(
     candidates: tuple[CandidateExtraction, ...],
     observations: tuple[AcceptedObservation, ...],
     *,
-    row_coverage_evidence: PageRowCoverageEvidence | None = None,
+    inventory_status: Literal["COMPLETE", "INCOMPLETE"] = "COMPLETE",
+    source_page_sha256: str | None = None,
+    result_row_indices: tuple[int, ...] | None = None,
 ):
     page_raster = _synthetic_page()
-    if row_coverage_evidence is None:
-        first_candidate = candidates[0]
-        row_coverage_evidence = PageRowCoverageEvidence(
-            report_id=first_candidate.report_id,
-            page_number=first_candidate.page_number,
-            extraction_job_id=first_candidate.extraction_job_id,
-            source_page_sha256=sha256(page_raster).hexdigest(),
-            expected_row_indices=tuple(
-                sorted(candidate.row_index for candidate in candidates)
+    first_candidate = candidates[0]
+    extraction_result = CandidateExtractionResult(
+        report_id=first_candidate.report_id,
+        extraction_job_id=first_candidate.extraction_job_id,
+        candidates=candidates,
+        page_inventories=(
+            ExtractionPageInventory(
+                page_number=first_candidate.page_number,
+                source_page_sha256=(
+                    source_page_sha256 or sha256(page_raster).hexdigest()
+                ),
+                result_row_indices=(
+                    result_row_indices
+                    if result_row_indices is not None
+                    else tuple(sorted(candidate.row_index for candidate in candidates))
+                ),
+                inventory_status=inventory_status,
             ),
-        )
+        ),
+    )
     return redact_source_page(
         page_raster=page_raster,
         report_id=REPORT_ID,
         page_number=1,
-        candidates=candidates,
+        extraction_result=extraction_result,
         observations=observations,
         grant=GRANT,
         as_of=NOW,
         region_confidence_threshold=0.9,
         mask_padding_pixels=2,
-        row_coverage_evidence=row_coverage_evidence,
     )
 
 
@@ -203,25 +219,28 @@ def test_redacts_pdf_raster_and_ocr_checks_the_rendered_page() -> None:
         lifecycle_status="CANDIDATE",
         raw_value="999",
     )
-    evidence = PageRowCoverageEvidence(
-        report_id=REPORT_ID,
-        page_number=1,
-        extraction_job_id=granted.extraction_job_id,
-        source_page_sha256=sha256(page_raster).hexdigest(),
-        expected_row_indices=(0, 1),
-    )
-
     result = redact_source_page(
         page_raster=page_raster,
         report_id=REPORT_ID,
         page_number=1,
-        candidates=(granted, ungranted),
+        extraction_result=CandidateExtractionResult(
+            report_id=REPORT_ID,
+            extraction_job_id=granted.extraction_job_id,
+            candidates=(granted, ungranted),
+            page_inventories=(
+                ExtractionPageInventory(
+                    page_number=1,
+                    source_page_sha256=sha256(page_raster).hexdigest(),
+                    result_row_indices=(0, 1),
+                    inventory_status="COMPLETE",
+                ),
+            ),
+        ),
         observations=(_accepted_observation(granted, analyte_code="GLUCOSE"),),
         grant=GRANT,
         as_of=NOW,
         region_confidence_threshold=0.9,
         mask_padding_pixels=2,
-        row_coverage_evidence=evidence,
     )
 
     assert result.disposition == "REDACTED_PNG"
@@ -380,17 +399,11 @@ def test_withholds_page_when_row_coverage_is_unverified() -> None:
     )
 
     page_raster = _synthetic_page()
-    evidence = PageRowCoverageEvidence(
-        report_id=REPORT_ID,
-        page_number=1,
-        extraction_job_id=granted.extraction_job_id,
-        source_page_sha256=sha256(page_raster).hexdigest(),
-        expected_row_indices=(0, 1),
-    )
     result = _redact(
         (granted,),
         (_accepted_observation(granted, analyte_code="GLUCOSE"),),
-        row_coverage_evidence=evidence,
+        inventory_status="INCOMPLETE",
+        result_row_indices=(0, 1),
     )
 
     assert result.disposition == "WITHHELD"
@@ -398,7 +411,32 @@ def test_withholds_page_when_row_coverage_is_unverified() -> None:
     assert result.redacted_png is None
 
 
-def test_withholds_page_when_coverage_evidence_is_missing() -> None:
+def test_complete_extraction_result_rejects_missing_candidate_rows() -> None:
+    granted = _candidate(
+        23,
+        analyte_code="GLUCOSE",
+        row_index=0,
+        bounding_box=(0.05, 0.15, 0.4, 0.65),
+        lifecycle_status="ACCEPTED",
+    )
+
+    with pytest.raises(ValueError, match="complete page inventory"):
+        CandidateExtractionResult(
+            report_id=REPORT_ID,
+            extraction_job_id=granted.extraction_job_id,
+            candidates=(granted,),
+            page_inventories=(
+                ExtractionPageInventory(
+                    page_number=1,
+                    source_page_sha256=sha256(_synthetic_page()).hexdigest(),
+                    result_row_indices=(0, 1),
+                    inventory_status="COMPLETE",
+                ),
+            ),
+        )
+
+
+def test_withholds_page_when_inventory_hash_does_not_match_raster() -> None:
     granted = _candidate(
         19,
         analyte_code="GLUCOSE",
@@ -419,13 +457,24 @@ def test_withholds_page_when_coverage_evidence_is_missing() -> None:
         page_raster=_synthetic_page(),
         report_id=REPORT_ID,
         page_number=1,
-        candidates=(granted, ungranted),
+        extraction_result=CandidateExtractionResult(
+            report_id=REPORT_ID,
+            extraction_job_id=granted.extraction_job_id,
+            candidates=(granted, ungranted),
+            page_inventories=(
+                ExtractionPageInventory(
+                    page_number=1,
+                    source_page_sha256="0" * 64,
+                    result_row_indices=(0, 1),
+                    inventory_status="COMPLETE",
+                ),
+            ),
+        ),
         observations=(_accepted_observation(granted, analyte_code="GLUCOSE"),),
         grant=GRANT,
         as_of=NOW,
         region_confidence_threshold=0.9,
         mask_padding_pixels=2,
-        row_coverage_evidence=None,
     )
 
     assert result.disposition == "WITHHELD"
