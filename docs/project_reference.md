@@ -25,7 +25,7 @@ LabTrail is a patient-controlled record for laboratory results collected across 
 - **GrantRecord** — minimal server-side authorization and key-share metadata; it must not expose recipient display name, analyte scope, date range, or clinical values in plaintext.
 - **AuditEvent** — immutable record of review, grant, access, revocation, and retraction actions.
 
-The original noun candidates map as follows: `Patient` → `PatientAccount`, `LabReport` → `SourceReport`, `LabResult` → `CandidateExtraction` plus `AcceptedObservation`, and `ShareGrant` → `ClientShareGrant` plus `GrantRecord`. See the [UML draft](./uml_draft_copilot.md).
+The original noun candidates map as follows: `Patient` → `PatientAccount`, `LabReport` → `SourceReport`, `LabResult` → `CandidateExtraction` plus `AcceptedObservation`, and `ShareGrant` → `ClientShareGrant` plus `GrantRecord`. See the [UML draft](archive/uml_draft_copilot.md).
 
 ## Architecture and trust boundaries
 
@@ -39,7 +39,7 @@ The browser-to-server trust assumption matters: a compromised host could serve a
 ## Security and privacy rules
 
 - Encrypt patient records, source files, and share bundles client-side before persistent server storage; use TLS for transport.
-- Follow the key hierarchy and direct AES-256-GCM, per-grant 2-of-2 XOR share design in [the security architecture](./labtrail_security_architecture_updated_section_7_5.md). Use established cryptographic APIs; do not invent or implement primitives.
+- Follow the key hierarchy and direct AES-256-GCM, per-grant 2-of-2 XOR share design in [the security architecture](archive/labtrail_security_architecture_updated_section_7_5.md). Use established cryptographic APIs; do not invent or implement primitives.
 - Use Argon2id for the human-chosen login passphrase. The opt-in 24-word recovery phrase encodes a generated 256-bit secret, so derive its recovery key with HKDF-SHA-256 and purpose-specific versioned `info`; store only the AES-GCM-wrapped PMK and nonce in Z3. The recovery phrase/key never leaves the client. Recovery ciphertext and nonce must both be present exactly when recovery is configured.
 - Keep recipient share material in the URL fragment, not HTTP requests. Treat the full link as sensitive: the fragment may be visible to email clients, browser history, or page scripts. Link possession alone is not authorization; require the specified clinician verification and per-session second factor.
 - Keep share scope on the patient client and inside the encrypted bundle. Send only required authorization, expiry, ciphertext, and server-share metadata to Z3.
@@ -85,6 +85,6 @@ The prototype does not include automated portal/EHR imports or write-back, careg
 ## Project reference documents
 
 - [Updated solution design report](./labtrail_solution_design_report_a2_updated.md) — requirements, architecture, interfaces, state models, implementation increments, and verification.
-- [Security architecture](./labtrail_security_architecture_updated_section_7_5.md) — key hierarchy, share protocol, trust assumptions, and revocation limits.
-- [UML draft](./uml_draft_copilot.md) — domain classes and relationships.
-- [Project specification](./labtrail_spec.md) — concise client feature request and initial candidate nouns.
+- [Security architecture](archive/labtrail_security_architecture_updated_section_7_5.md) — key hierarchy, share protocol, trust assumptions, and revocation limits.
+- [UML draft](archive/uml_draft_copilot.md) — domain classes and relationships.
+- [Project specification](archive/labtrail_spec.md) — concise client feature request and initial candidate nouns.

@@ -21,6 +21,7 @@ from models import (
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[1]
+    / "schemas"
     / "candidate_extraction_result_schema_v1.json"
 )
 SCHEMA = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))

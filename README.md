@@ -288,11 +288,11 @@ LabTrail/
 ├── labtrail_vault.py           # Passphrase-encrypted record file
 ├── models.py                   # Domain classes
 ├── reference/lab_tests.csv     # Versioned test catalog (191 tests)
-├── *_schema_v1.json            # Extraction result and share payload schemas
+├── schemas/                    # Extraction result and share payload JSON schemas
 ├── samples/                    # Synthetic reports and hand-labeled ground truth
 ├── scripts/                    # Sample generator and extraction benchmark
 ├── tests/                      # pytest suite, including end-to-end app tests
-└── docs/                       # Implementation notes, diagrams, benchmark results
+└── docs/                       # Design report, implementation notes, benchmarks, archive
 ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -373,7 +373,7 @@ Project link: [https://github.com/renee127/LabTrail](https://github.com/renee127
 * [Shields.io](https://shields.io) for badges
 * README structure inspired by [Best-README-Template](https://github.com/othneildrew/Best-README-Template) and [awesome-readme](https://github.com/matiassingers/awesome-readme)
 * Developed with AI assistance (GitHub Copilot and Claude); see Appendix B of the
-  [solution design report](labtrail_solution_design_report_a2_updated.md)
+  [solution design report](docs/labtrail_solution_design_report_a2_updated.md)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

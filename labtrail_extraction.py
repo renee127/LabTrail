@@ -65,8 +65,7 @@ _REFERENCE_INTERVAL_PATTERN = re.compile(
     r"^(?P<interval>\d+(?:\.\d+)?\s*[-–]\s*\d+(?:\.\d+)?|[<>≤≥]\s*\d+(?:\.\d+)?)(?:\s|$)"
 )
 _RESULT_SCHEMA = json.loads(
-    Path(__file__)
-    .with_name("candidate_extraction_result_schema_v1.json")
+    (Path(__file__).with_name("schemas") / "candidate_extraction_result_schema_v1.json")
     .read_text(encoding="utf-8")
 )
 _RESULT_VALIDATOR = Draft202012Validator(

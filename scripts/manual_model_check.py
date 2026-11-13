@@ -1,9 +1,10 @@
 """Manually inspect synthetic LabTrail domain objects and review-queue behavior.
 
-Run with: python manual_model_check.py
+Run with: python3 scripts/manual_model_check.py
 """
 
 import json
+import sys
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -11,6 +12,8 @@ from hashlib import sha256
 from pathlib import Path
 from pprint import pprint
 from uuid import UUID
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from labtrail_algorithms import (
     build_share_payload_projection,
@@ -395,8 +398,7 @@ def main() -> None:
     serialized_share_payload = serialize_share_payload_projection(share_payload)
     decoded_share_payload = json.loads(serialized_share_payload)
     share_payload_schema = json.loads(
-        Path(__file__)
-        .with_name("share_payload_schema_v1.json")
+        (Path(__file__).resolve().parents[1] / "schemas" / "share_payload_schema_v1.json")
         .read_text(encoding="utf-8")
     )
     withheld_payload = build_share_payload_projection(missing_region_selection)

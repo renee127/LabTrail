@@ -1,7 +1,7 @@
 # LabTrail — What Is Built
 
 This document describes the working prototype in this repository. It is
-deliberately narrower than the [solution design report](../labtrail_solution_design_report_a2_updated.md):
+deliberately narrower than the [solution design report](labtrail_solution_design_report_a2_updated.md):
 the report describes the full architecture, and this page shows which slice of it
 runs today, how the pieces fit together, and how each part is tested.
 

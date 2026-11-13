@@ -17,7 +17,7 @@ from labtrail_algorithms import (
 from models import AcceptedObservation, ClientShareGrant, ContextNote
 
 
-SCHEMA_PATH = Path(__file__).resolve().parents[1] / "share_payload_schema_v1.json"
+SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schemas" / "share_payload_schema_v1.json"
 SCHEMA = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 VALIDATOR = Draft202012Validator(SCHEMA, format_checker=FormatChecker())
 

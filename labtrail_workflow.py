@@ -158,7 +158,7 @@ def find_interpretive_language(text: str, extra_names: Iterable[str] = ()) -> li
 
 
 _SHARE_SCHEMA = json.loads(
-    Path(__file__).with_name("share_payload_schema_v1.json").read_text(encoding="utf-8")
+    (Path(__file__).with_name("schemas") / "share_payload_schema_v1.json").read_text(encoding="utf-8")
 )
 _SHARE_VALIDATOR = Draft202012Validator(_SHARE_SCHEMA, format_checker=FormatChecker())
 

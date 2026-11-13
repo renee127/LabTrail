@@ -6,7 +6,11 @@ from uuid import uuid4
 
 import pytest
 
-import manual_model_check
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import manual_model_check  # noqa: E402
 from labtrail_algorithms import (
     build_share_payload_projection,
     classify_candidate_routing,

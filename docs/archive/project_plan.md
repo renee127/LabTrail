@@ -1,6 +1,6 @@
 # LabTrail Project Plan and Estimate
 
-This estimate follows the seven implementation increments in the [solution design report](./labtrail_solution_design_report_a2_updated.md). The scope is an academic/prototype implementation using synthetic data, not a production deployment.
+This estimate follows the seven implementation increments in the [solution design report](../labtrail_solution_design_report_a2_updated.md). The scope is an academic/prototype implementation using synthetic data, not a production deployment.
 
 | Phase | Main work and validation | Effort estimate |
 |---|---|---:|
