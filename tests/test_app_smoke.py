@@ -54,3 +54,24 @@ def test_upload_confirm_review_timeline_share() -> None:
     assert any("3 result(s)" in s.value for s in at.success)
     assert not any("withheld" in m.value for m in at.markdown)
     assert len(at.get("image")) >= 3
+
+
+def test_encrypted_record_round_trip_through_the_ui() -> None:
+    at = AppTest.from_file("../app.py", default_timeout=120)
+    at.run()
+    _click(at, "Load 3 synthetic sample reports")
+    at.checkbox[0].check()
+    _click(at, "Confirm report")
+    at.sidebar.text_input(key="vault-save-pass").input("correct horse battery")
+    at.run()
+    _click(at, "Encrypt record")
+    vault_file = at.session_state["vault_file"]
+    assert vault_file and b"Jordan" not in vault_file
+
+    fresh = AppTest.from_file("../app.py", default_timeout=120)
+    fresh.run()
+    assert not fresh.session_state["reports"]
+    from labtrail_vault import decrypt_record
+    record = decrypt_record(vault_file, "correct horse battery")
+    assert len(record["reports"]) == 3
+    assert sum(r["confirmed"] is not None for r in record["reports"].values()) == 1

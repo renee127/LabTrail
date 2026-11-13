@@ -19,6 +19,7 @@ from PIL import Image
 from labtrail_algorithms import find_duplicate_observation_groups, partition_review_queue
 from labtrail_extraction import extract_document_ocr_line_candidates
 from labtrail_redaction import rasterize_pdf_page, redact_source_page
+from labtrail_vault import MIN_PASSPHRASE_LENGTH, VaultError, decrypt_record, encrypt_record
 from labtrail_workflow import (
     ANALYTE_LABELS,
     COMPARABILITY_LABELS,
@@ -491,6 +492,55 @@ def page_share() -> None:
     )
 
 
+# ---------------------------------------------------------------- vault
+
+_VAULT_KEYS = ("reports", "observations", "notes", "activity", "confirmed_identities")
+
+
+def vault_panel() -> None:
+    """Save the record to, or restore it from, a passphrase-encrypted file."""
+    ss = _state()
+    with st.sidebar.expander("🔒 Save or open your record"):
+        st.caption(
+            "Your record lives only in this browser tab. Save it as a file encrypted with "
+            "your passphrase (Argon2id + AES-256-GCM). Without the passphrase the file "
+            "cannot be opened, by anyone, including LabTrail."
+        )
+        save_pass = st.text_input("Passphrase", type="password", key="vault-save-pass")
+        if st.button("Encrypt record", disabled=not ss.reports):
+            try:
+                ss.vault_file = encrypt_record({k: ss[k] for k in _VAULT_KEYS}, save_pass)
+            except ValueError as error:
+                st.error(str(error))
+            else:
+                _log("Encrypted the record for download")
+        if ss.get("vault_file"):
+            st.download_button(
+                "Download encrypted record", ss.vault_file,
+                file_name="labtrail-record.vault", mime="application/octet-stream",
+            )
+        st.divider()
+        upload = st.file_uploader("Open a saved record", type=["vault"], key="vault-upload")
+        open_pass = st.text_input("Passphrase", type="password", key="vault-open-pass")
+        if st.button("Open record", disabled=upload is None):
+            try:
+                record = decrypt_record(upload.getvalue(), open_pass)
+            except VaultError as error:
+                st.error(str(error))
+            else:
+                for key in _VAULT_KEYS:
+                    ss[key] = record[key]
+                ss.candidates = {
+                    c.candidate_id: c
+                    for r in ss.reports.values()
+                    for c in r["result"].candidates
+                }
+                ss.vault_file = None
+                _log(f"Opened saved record ({len(ss.observations)} results)")
+                st.rerun()
+        st.caption(f"Passphrase: at least {MIN_PASSPHRASE_LENGTH} characters. It cannot be recovered.")
+
+
 # ---------------------------------------------------------------- layout
 
 def main() -> None:
@@ -506,6 +556,7 @@ def main() -> None:
     )
     st.sidebar.metric("Rows awaiting review", pending)
     st.sidebar.metric("Accepted results", sum(o.lifecycle_status == "ACCEPTED" for o in ss.observations))
+    vault_panel()
     with st.sidebar.expander("Activity log"):
         for when, message in reversed(ss.activity[-30:]):
             st.caption(f"{when} · {message}")

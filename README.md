@@ -25,8 +25,12 @@ The demo walks through one end-to-end slice with synthetic data only:
    flattened image with every other line masked, and only after an OCR check finds no
    hidden text still readable; otherwise the page is withheld.
 
-Not built (designed only): encryption and key management, accounts, the recipient
-viewer, and revocation.
+The sidebar's **Save or open your record** panel encrypts the whole record into a
+`.vault` file with your passphrase (Argon2id key derivation, AES-256-GCM; the file
+header is authenticated so its settings cannot be weakened) and opens it again later.
+
+Not built (designed only): a patient master key with recovery phrase, accounts and
+server storage, encryption of shares, the recipient viewer, and revocation.
 
 ## Development checks
 
