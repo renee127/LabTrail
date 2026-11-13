@@ -26,6 +26,7 @@ from labtrail_workflow import (
     accept_candidate,
     analyte_timeline,
     build_share,
+    confirm_page_coverage,
     is_result_like,
     suggest_analyte_code,
     suggest_report_metadata,
@@ -190,6 +191,45 @@ def _decide(candidate: CandidateExtraction, status: str) -> None:
     candidate.lifecycle_status = status
 
 
+def _coverage_confirmation(report_id: UUID, report: dict) -> None:
+    """After every line is decided, let the patient attest each page's line list."""
+    result = report["result"]
+    unconfirmed = [
+        inv.page_number for inv in result.page_inventories if inv.inventory_status != "COMPLETE"
+    ]
+    if not unconfirmed:
+        st.success("Reviewed, and every page confirmed complete. Pages can be shared as redacted images.")
+        return
+    st.success("Everything on this report has been reviewed.")
+    for page_number in unconfirmed:
+        with st.expander(f"Optional: confirm page {page_number} is complete so it can be shared as a redacted image"):
+            left, right = st.columns([3, 2])
+            left.image(report["pages"][page_number], caption=f"Page {page_number}")
+            with right:
+                st.write("Lines LabTrail found on this page:")
+                for c in result.candidates:
+                    if c.page_number == page_number:
+                        mark = "✅" if c.lifecycle_status == "ACCEPTED" else "✖️"
+                        st.caption(f"{mark} {c.raw_analyte_name} {c.raw_value or ''} {c.raw_unit or ''}")
+                st.caption(
+                    "Compare with the page image. When you share, every line except the results "
+                    "you choose is covered with a black box. Text missing from this list would not "
+                    "be covered."
+                )
+                ok = st.checkbox(
+                    "Every line of text on this page appears in the list",
+                    key=f"cov-ok-{report_id}-{page_number}",
+                )
+                if st.button(
+                    f"Confirm page {page_number} is complete",
+                    key=f"cov-{report_id}-{page_number}",
+                    disabled=not ok,
+                ):
+                    report["result"] = confirm_page_coverage(result, page_number)
+                    _log(f"Confirmed page {page_number} of {report['filename']} is complete")
+                    st.rerun()
+
+
 def page_review() -> None:
     ss = _state()
     st.header("2 · Review extracted results")
@@ -213,7 +253,7 @@ def page_review() -> None:
         meta = report["confirmed"]
         st.subheader(f"{meta['lab']} · {meta['collected']}")
         if not pending:
-            st.success("Everything on this report has been reviewed.")
+            _coverage_confirmation(report_id, report)
             continue
 
         if other:
@@ -419,11 +459,16 @@ def page_share() -> None:
     st.write("**Source pages**")
     st.caption(
         "Source pages are shared only as flattened images with every ungranted row masked. "
-        "If LabTrail cannot prove it found every result row on a page, the page is withheld."
+        "A page is withheld unless you confirmed it complete and the masked image passes an "
+        "OCR check that no hidden text is still readable."
     )
     reasons = {
-        "ROW_COVERAGE_UNVERIFIED": "withheld: the OCR prototype cannot prove it found every row",
+        "ROW_COVERAGE_UNVERIFIED": "withheld: page not yet confirmed complete on the Review page",
         "NO_GRANTED_OBSERVATION": "withheld: nothing on this page is in scope",
+        "OCR_LEAK_DETECTED": "withheld: hidden text was still readable after masking",
+        "OCR_VERIFICATION_FAILED": "withheld: the masked page could not be verified",
+        "REGION_UNRELIABLE": "withheld: a row's location on the page is uncertain",
+        "REDACTION_LABEL_DOES_NOT_FIT": "withheld: a masked row is too small to label",
     }
     for plan in selection.source_pages:
         report = ss.reports[plan.report_id]
@@ -436,7 +481,7 @@ def page_share() -> None:
         label = reasons.get(outcome.withheld_reason or "", outcome.withheld_reason or "redacted image")
         st.write(f"- {report['filename']} p.{plan.page_number}: {label}")
         if outcome.redacted_png:
-            st.image(outcome.redacted_png)
+            st.image(outcome.redacted_png, width=600)
 
     with st.expander("Preview share JSON"):
         st.code(payload.decode("utf-8")[:4000], language="json")

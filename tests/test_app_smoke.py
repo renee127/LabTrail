@@ -32,6 +32,16 @@ def test_upload_confirm_review_timeline_share() -> None:
     assert sum(o.conversion_outcome == "UNCONVERTIBLE_RETAINED" for o in observations) == 1
     assert at.sidebar.metric[0].value == "0"
 
+    for _ in range(3):
+        at.checkbox[0].check()
+        at.run()
+        _click(at, "Confirm page 1 is complete")
+    assert all(
+        inv.inventory_status == "COMPLETE"
+        for r in at.session_state["reports"].values()
+        for inv in r["result"].page_inventories
+    )
+
     at.sidebar.radio[0].set_value("Timeline")
     at.run()
     assert not at.exception
@@ -42,4 +52,5 @@ def test_upload_confirm_review_timeline_share() -> None:
     _click(at, "Prepare share")
     assert not at.exception
     assert any("3 result(s)" in s.value for s in at.success)
-    assert any("cannot prove it found every row" in m.value for m in at.markdown)
+    assert not any("withheld" in m.value for m in at.markdown)
+    assert len(at.get("image")) >= 3

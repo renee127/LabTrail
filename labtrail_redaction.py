@@ -94,11 +94,26 @@ def _normalize_ocr_text(value: str) -> str:
     )
 
 
+def _boxes_intersect(
+    a: tuple[int, int, int, int], b: tuple[int, int, int, int]
+) -> bool:
+    return a[0] <= b[2] and a[2] >= b[0] and a[1] <= b[3] and a[3] >= b[1]
+
+
 def _verify_redacted_page_ocr(
     image: Image.Image,
     mask_regions: tuple[tuple[UUID, tuple[int, int, int, int]], ...],
     masked_candidates: tuple[CandidateExtraction, ...],
+    granted_regions: tuple[tuple[int, int, int, int], ...] = (),
 ) -> WithheldReason | None:
+    """OCR the flattened page and fail closed on any sign of ungranted text.
+
+    Two checks run. (1) Any word inside a mask other than the REDACTED label is a
+    leak. (2) No masked field's text may appear anywhere outside the granted rows.
+    Words inside granted rows are excluded from check (2) only, because the patient
+    chose to show them and they legitimately repeat tokens such as units
+    ("mg/dL") that also appear in masked rows.
+    """
     if not mask_regions:
         return None
 
@@ -119,7 +134,14 @@ def _verify_redacted_page_ocr(
         if str(text).strip()
     ]
     recognized_text = _normalize_ocr_text(
-        " ".join(text for text, *_ in ocr_words)
+        " ".join(
+            text
+            for text, left, top, width, height in ocr_words
+            if not any(
+                _boxes_intersect((left, top, left + width, top + height), region)
+                for region in granted_regions
+            )
+        )
     )
 
     for candidate in masked_candidates:
@@ -404,10 +426,15 @@ def redact_source_page(
             font=font,
         )
 
+    granted_regions = tuple(
+        _pixel_bounds(candidate_by_id[candidate_id].bounding_box, width, height, 0)
+        for candidate_id in selected_by_candidate
+    )
     ocr_withheld_reason = _verify_redacted_page_ocr(
         flattened,
         tuple(mask_regions),
         masked_candidates,
+        granted_regions,
     )
     if ocr_withheld_reason is not None:
         return _withheld(

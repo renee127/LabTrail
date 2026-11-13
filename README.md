@@ -21,8 +21,9 @@ The demo walks through one end-to-end slice with synthetic data only:
    table, with markers when the lab, unit, or reference range changes. Values with no
    supported conversion (e.g. HbA1c in mmol/mol) are listed, not plotted.
 4. **Share**: pick analytes, dates, and a recipient to produce a schema-validated JSON
-   share. Source pages are withheld because the OCR prototype cannot prove full row
-   coverage.
+   share. If you confirmed a page complete on the Review page, it is shared as a
+   flattened image with every other line masked, and only after an OCR check finds no
+   hidden text still readable; otherwise the page is withheld.
 
 Not built (designed only): encryption and key management, accounts, the recipient
 viewer, and revocation.

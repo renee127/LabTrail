@@ -9,7 +9,7 @@ import difflib
 import json
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
@@ -207,6 +207,41 @@ def accept_candidate(
         lifecycle_status="ACCEPTED",
         rule_version=conversion.rule_version,
         accepted_at=accepted_at,
+    )
+
+
+def page_lines_pending(result: CandidateExtractionResult, page_number: int) -> int:
+    """Number of extracted lines on a page still awaiting a patient decision."""
+    return sum(
+        1
+        for c in result.candidates
+        if c.page_number == page_number and c.lifecycle_status == "CANDIDATE"
+    )
+
+
+def confirm_page_coverage(
+    result: CandidateExtractionResult, page_number: int
+) -> CandidateExtractionResult:
+    """Record the patient's confirmation that a page's line list is complete.
+
+    Design change from the report (which assigned coverage to the extraction
+    service): the OCR prototype cannot prove it found every row, so after the
+    patient has decided every line and compared the list with the page image, the
+    patient attests coverage. Only then may the page be redacted for sharing;
+    the redactor's OCR leak check still runs on the result.
+    """
+    if not any(inv.page_number == page_number for inv in result.page_inventories):
+        raise ValueError("That page is not part of this report.")
+    if page_lines_pending(result, page_number):
+        raise ValueError("Accept or reject every line on the page first.")
+    return replace(
+        result,
+        page_inventories=tuple(
+            replace(inv, inventory_status="COMPLETE")
+            if inv.page_number == page_number
+            else inv
+            for inv in result.page_inventories
+        ),
     )
 
 

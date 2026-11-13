@@ -6,9 +6,15 @@ from uuid import uuid4
 
 import pytest
 
+import pytesseract
+from PIL import Image
+from io import BytesIO
+
 from labtrail_extraction import extract_document_ocr_line_candidates
+from labtrail_redaction import rasterize_pdf_page, redact_source_page
 from labtrail_workflow import (
     accept_candidate,
+    confirm_page_coverage,
     analyte_timeline,
     build_share,
     is_result_like,
@@ -166,3 +172,60 @@ def test_sample_reports_extract_and_suggest_metadata() -> None:
                 for c in result.candidates if is_result_like(c)]
         expected = [(r["analyte"], r["value"], r["unit"], r["reference_interval"]) for r in report["results"]]
         assert rows == expected
+
+
+def _reviewed_sample(name: str = "harbor_reference_2026-02-10.pdf"):
+    pdf = (SAMPLES / name).read_bytes()
+    result = extract_document_ocr_line_candidates(
+        source_bytes=pdf, mime_type="application/pdf", report_id=uuid4(),
+        extraction_job_id=uuid4(), extracted_at=NOW,
+    )
+    observations = []
+    for c in result.candidates:
+        if is_result_like(c):
+            observations.append(_accept(
+                c, code=suggest_analyte_code(c.raw_analyte_name), lab="Harbor",
+                collected=date(2026, 2, 10),
+            ))
+            c.lifecycle_status = "ACCEPTED"
+        else:
+            c.lifecycle_status = "REJECTED"
+    return pdf, result, observations
+
+
+def test_page_coverage_requires_every_line_decided() -> None:
+    _, result, _ = _reviewed_sample()
+    result.candidates[0].lifecycle_status = "CANDIDATE"
+    with pytest.raises(ValueError, match="every line"):
+        confirm_page_coverage(result, 1)
+    with pytest.raises(ValueError, match="not part"):
+        confirm_page_coverage(result, 2)
+
+
+def test_confirmed_page_is_redacted_to_only_the_granted_row() -> None:
+    pdf, result, observations = _reviewed_sample()
+    page = rasterize_pdf_page(pdf, 1, dpi=150)
+    grant, _, _ = build_share(
+        observations=observations, notes=[], analytes=["GLUCOSE"],
+        range_start=date(2026, 1, 1), range_end=date(2026, 12, 31),
+        recipient_name="Dr. Test", recipient_email="dr@example.org",
+        now=NOW, valid_for=timedelta(days=14),
+    )
+
+    def redact(extraction_result):
+        return redact_source_page(
+            page_raster=page, report_id=result.report_id, page_number=1,
+            extraction_result=extraction_result, observations=observations,
+            grant=grant, as_of=NOW, region_confidence_threshold=0.8,
+            mask_padding_pixels=4,
+        )
+
+    unconfirmed = redact(result)
+    assert unconfirmed.withheld_reason == "ROW_COVERAGE_UNVERIFIED"
+
+    redacted = redact(confirm_page_coverage(result, 1))
+    assert redacted.disposition == "REDACTED_PNG"
+    text = pytesseract.image_to_string(Image.open(BytesIO(redacted.redacted_png))).casefold()
+    assert "glucose" in text and "104" in text
+    for hidden in ("cholesterol", "131", "hemoglobin", "6.1", "jordan", "harbor"):
+        assert hidden not in text
