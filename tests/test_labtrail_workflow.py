@@ -12,8 +12,15 @@ from io import BytesIO
 
 from labtrail_extraction import extract_document_ocr_line_candidates
 from labtrail_redaction import rasterize_pdf_page, redact_source_page
+from labtrail_extraction import _parse_result_line
 from labtrail_workflow import (
     ANALYTE_LABELS,
+    auto_reject_identification_lines,
+    identification_category,
+    reopen_page_coverage,
+    CUSTOM_CODE_PREFIX,
+    add_custom_analyte,
+    all_analyte_labels,
     accept_candidate,
     load_analyte_table,
     plan_chart,
@@ -341,3 +348,146 @@ def test_test_names_are_not_mistaken_for_interpretation() -> None:
     assert find_interpretive_language("High-Density Lipoprotein (HDL) 55 mg/dL") == []
     assert find_interpretive_language("Very Low-Density Lipoprotein (VLDL)") == []
     assert find_interpretive_language("HDL is high") == ["high"]
+
+
+def test_added_test_gets_a_stable_custom_code_and_is_reused() -> None:
+    custom: dict[str, str] = {}
+    code, created = add_custom_analyte("  Homocysteine  ", custom)
+    assert created and code == f"{CUSTOM_CODE_PREFIX}HOMOCYSTEINE"
+    assert custom == {code: "Homocysteine"}
+    assert add_custom_analyte("HOMOCYSTEINE", custom) == (code, False)
+    assert all_analyte_labels(custom)[code] == "Homocysteine"
+    assert all_analyte_labels(custom)["GLUCOSE"] == "Glucose"
+
+
+def test_adding_a_name_already_in_the_table_reuses_that_test() -> None:
+    custom: dict[str, str] = {}
+    assert add_custom_analyte("HDL", custom) == ("HDL_C", False)
+    assert add_custom_analyte("glucose", custom) == ("GLUCOSE", False)
+    assert custom == {}
+
+
+def test_codes_stay_unique_when_names_differ_only_in_punctuation() -> None:
+    custom: dict[str, str] = {}
+    first, _ = add_custom_analyte("Vitamin K1", custom)
+    second, _ = add_custom_analyte("Vitamin K 1", custom)
+    third, _ = add_custom_analyte("Vitamin K-1 (phylloquinone)", custom)
+    assert len({first, second, third}) == 3
+    assert third.startswith(CUSTOM_CODE_PREFIX) and len(third) <= len(CUSTOM_CODE_PREFIX) + 40
+
+
+@pytest.mark.parametrize("name", ["", " ", "7", "x" * 81, "Bad\x00name"])
+def test_invalid_added_names_are_refused(name) -> None:
+    with pytest.raises(ValueError):
+        add_custom_analyte(name, {})
+
+
+def test_added_tests_are_suggested_on_later_uploads() -> None:
+    custom: dict[str, str] = {}
+    code, _ = add_custom_analyte("Homocysteine", custom)
+    assert suggest_analyte_code("Homocysteine") is None
+    assert suggest_analyte_code("HOMOCYSTEINE", custom) == code
+    assert suggest_analyte_code("Glucose", custom) == "GLUCOSE"  # table still wins
+    # OCR misreads are matched only within names sharing the first word, the same
+    # conservative rule as the reference table.
+    plasma, _ = add_custom_analyte("Homocysteine Plasma", custom)
+    assert suggest_analyte_code("Homocysteine Plasrna", custom) == plasma
+    assert suggest_analyte_code("Homocystelne", custom) is None
+
+
+def test_accept_with_added_test_charts_as_reported() -> None:
+    custom: dict[str, str] = {}
+    code, _ = add_custom_analyte("Homocysteine", custom)
+    candidate = _candidate(raw_analyte_name="Homocysteine", raw_value="11.2", raw_unit="umol/L")
+    with pytest.raises(ValueError, match="enter its name"):
+        _accept(candidate, code=code)  # unknown without the patient's list
+    observation = accept_candidate(
+        candidate, analyte_code=code, value="11.2", unit="umol/L", reference_interval=None,
+        source_lab="Lab A", collected=date(2026, 2, 10), accepted_at=NOW, custom_analytes=custom,
+    )
+    assert observation.analyte_code == code
+    assert observation.unconvertible_reason == "NO_CANONICAL_UNIT_DEFINED"
+    plan = plan_chart([{"canonical_value": None, "canonical_unit": None, "original_value": "11.2",
+                        "original_unit": "umol/L", "unconvertible_reason": "NO_CANONICAL_UNIT_DEFINED"}])
+    assert plan.as_reported and plan.plotted == (0,)
+
+
+def test_scanner_exempts_names_the_patient_added() -> None:
+    assert find_interpretive_language("High Sensitivity Panel 4") == ["High"]
+    assert find_interpretive_language("High Sensitivity Panel 4", ["High Sensitivity Panel"]) == []
+
+
+def _line(text: str, **overrides) -> CandidateExtraction:
+    name, value, unit, interval, flag = _parse_result_line(text)
+    return _candidate(raw_analyte_name=name, raw_value=value, raw_unit=unit,
+                      reference_interval=interval, abnormal_flag=flag, **overrides)
+
+
+@pytest.mark.parametrize(
+    ("text", "category"),
+    [
+        ("Patient: Jordan Sample", "name"),
+        ("First Name: Jordan", "name"),
+        ("Mr. Saubhik Bhaumik", "name"),
+        ("DOB: 01/02/1970", "date of birth"),
+        ("D.O.B. 1970-01-01", "date of birth"),
+        ("Age / Sex : 27 YRS / M", "age / sex"),   # parses like a result row
+        ("MRN 1234567", "identifier"),
+        ("Reg. no. : 1007", "identifier"),
+        ("Specimen ID 5512 ABC", "identifier"),
+        ("Accession #: 99-123", "identifier"),
+        ("Address: 12 Main St", "address"),
+        ("123 Ocean Avenue", "address"),
+        ("Phone: (561) 555-0100", "contact"),
+        ("Email jordan@example.org", "contact"),
+        ("Cell: 561-555-0100", "contact"),
+        ("Collected: 2026-02-10", "report date"),
+        ("Registered on : 17/10/2024 05:32 PM", "report date"),
+        ("Referred by : Dr. Sachin Patil (MBBS)", "clinician"),
+        ("Dr. A. K. Asthana", "clinician"),
+        ("Page 1 of 2", "page footer"),
+    ],
+)
+def test_identification_lines_are_recognised(text, category) -> None:
+    assert identification_category(_line(text)) == category
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Glucose 104 mg/dL 70-99", "Sodium 140 mmol/L", "Total Protein 7.1 g/dL",
+        "Specific Gravity 1.020", "Free T4 1.2 ng/dL", "Base Excess -1 mmol/L",
+        "Harbor Reference Laboratory", "St. Brigid Hospital Laboratory",
+        "Test Result Units Reference", "SYNTHETIC TEST DOCUMENT - NOT A REAL PATIENT",
+        "cell membranes and in blood plasma. It is an essential component",
+    ],
+)
+def test_results_and_lab_names_are_never_auto_rejected(text) -> None:
+    assert identification_category(_line(text)) is None
+
+
+def test_a_test_the_patient_added_is_never_auto_rejected() -> None:
+    line = _line("Age Adjusted Score 12 pts")
+    assert identification_category(line) == "age / sex"
+    custom: dict[str, str] = {}
+    add_custom_analyte("Age Adjusted Score", custom)
+    assert identification_category(line, custom) is None
+
+
+def test_auto_reject_only_touches_pending_lines_and_reports_why() -> None:
+    _, result, _ = _reviewed_sample()
+    for c in result.candidates:
+        c.lifecycle_status = "CANDIDATE"
+    rejected = auto_reject_identification_lines(result)
+    by_text = {c.raw_analyte_name: rejected.get(c.candidate_id) for c in result.candidates}
+    assert by_text["Patient: Jordan Sample"] == "name"
+    assert by_text["Collected: 2026-02-10"] == "report date"
+    assert by_text["Glucose"] is None
+    assert all(c.lifecycle_status == "REJECTED" for c in result.candidates if c.candidate_id in rejected)
+    assert auto_reject_identification_lines(result) == {}  # nothing pending is re-processed
+
+
+def test_restoring_a_line_withdraws_page_confirmation() -> None:
+    _, result, _ = _reviewed_sample()
+    confirmed = confirm_page_coverage(result, 1)
+    assert reopen_page_coverage(confirmed, 1).page_inventories[0].inventory_status == "INCOMPLETE"

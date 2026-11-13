@@ -9,7 +9,7 @@ import csv
 import difflib
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, MutableMapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -141,15 +141,18 @@ _ANALYTE_NAME_PATTERN = re.compile(
 )
 
 
-def find_interpretive_language(text: str) -> list[str]:
+def find_interpretive_language(text: str, extra_names: Iterable[str] = ()) -> list[str]:
     """Return interpretive words in system-generated text (FR-13 scanner).
 
     The fixed non-interpretation notices and the names of tests (for example
-    "High-Density Lipoprotein") are exempt. Patient-authored note text should not
-    be passed in; the rule applies to what LabTrail itself says.
+    "High-Density Lipoprotein", plus any names the patient added) are exempt.
+    Patient-authored note text should not be passed in; the rule applies to what
+    LabTrail itself says.
     """
     for notice in _NON_INTERPRETATION_NOTICES:
         text = text.replace(notice, " ")
+    for name in sorted(extra_names, key=len, reverse=True):
+        text = re.sub(re.escape(name), " ", text, flags=re.IGNORECASE)
     text = _ANALYTE_NAME_PATTERN.sub(" ", text)
     return [match.group(0) for match in _INTERPRETIVE_PATTERN.finditer(text)]
 
@@ -203,23 +206,18 @@ def _build_aliases(labels: dict[str, str]) -> dict[str, str]:
 _ANALYTE_ALIASES: dict[str, str] = _build_aliases(ANALYTE_LABELS)
 
 
-def suggest_analyte_code(raw_name: str) -> str | None:
-    """Suggest an analyte code from the printed name, or None if unknown.
+def _fuzzy_match(key: str, aliases: Mapping[str, str]) -> str | None:
+    """Close match restricted to aliases sharing the exact first word.
 
-    Tolerates common OCR look-alike errors ("Cholestero!", "Hemoglobin Aic") with a
-    strict similarity cutoff. This is only a suggestion; the patient confirms it.
+    Near-identical names for different tests (HDL vs LDL) are never conflated,
+    and nothing is returned when two different tests are about equally close
+    (Troponin I vs T).
     """
-    key = _alias_key(raw_name)
-    if key in _ANALYTE_ALIASES:
-        return _ANALYTE_ALIASES[key]
-    # Fuzzy matching only within aliases sharing the exact first word, so that
-    # near-identical names for different tests (HDL vs LDL) are never conflated,
-    # and never when two different tests are about equally close (Troponin I/T).
     first_word = key.split(" ", 1)[0]
     scored = sorted(
         (
             (difflib.SequenceMatcher(None, key, alias).ratio(), alias)
-            for alias in _ANALYTE_ALIASES
+            for alias in aliases
             if alias.split(" ", 1)[0] == first_word
         ),
         reverse=True,
@@ -227,13 +225,73 @@ def suggest_analyte_code(raw_name: str) -> str | None:
     scored = [(score, alias) for score, alias in scored if score >= 0.88]
     if not scored:
         return None
-    best_code = _ANALYTE_ALIASES[scored[0][1]]
+    best_code = aliases[scored[0][1]]
     if any(
-        _ANALYTE_ALIASES[alias] != best_code and scored[0][0] - score < 0.03
+        aliases[alias] != best_code and scored[0][0] - score < 0.03
         for score, alias in scored[1:]
     ):
         return None
     return best_code
+
+
+def suggest_analyte_code(
+    raw_name: str, custom_analytes: Mapping[str, str] | None = None
+) -> str | None:
+    """Suggest an analyte code from the printed name, or None if unknown.
+
+    Checks the reference table first, then tests the patient added. Tolerates
+    common OCR look-alike errors ("Cholestero!", "Hemoglobin Aic") with a strict
+    similarity cutoff. This is only a suggestion; the patient confirms it.
+    """
+    key = _alias_key(raw_name)
+    custom_aliases = {_alias_key(name): code for code, name in (custom_analytes or {}).items()}
+    for aliases in (_ANALYTE_ALIASES, custom_aliases):
+        if key in aliases:
+            return aliases[key]
+    for aliases in (_ANALYTE_ALIASES, custom_aliases):
+        match = _fuzzy_match(key, aliases)
+        if match:
+            return match
+    return None
+
+
+CUSTOM_CODE_PREFIX = "CUSTOM_"
+_MAX_CUSTOM_NAME = 80
+
+
+def all_analyte_labels(custom_analytes: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Reference-table tests plus tests the patient added."""
+    return {**ANALYTE_LABELS, **(custom_analytes or {})}
+
+
+def add_custom_analyte(
+    name: str, custom_analytes: MutableMapping[str, str]
+) -> tuple[str, bool]:
+    """Add a patient-named test, or return the existing test with that name.
+
+    Returns (code, created). A name that exactly matches a reference test, one of
+    its abbreviations, or an earlier added test reuses that test rather than
+    creating a near-duplicate.
+    """
+    clean = re.sub(r"\s+", " ", name).strip()
+    if len(clean) < 2 or not any(ch.isalpha() for ch in clean):
+        raise ValueError("Enter the test name as printed on the report.")
+    if len(clean) > _MAX_CUSTOM_NAME:
+        raise ValueError(f"Test names are limited to {_MAX_CUSTOM_NAME} characters.")
+    if any(not ch.isprintable() for ch in clean):
+        raise ValueError("The test name contains characters that cannot be stored.")
+    key = _alias_key(clean)
+    if key in _ANALYTE_ALIASES:
+        return _ANALYTE_ALIASES[key], False
+    for code, existing in custom_analytes.items():
+        if _alias_key(existing) == key:
+            return code, False
+    slug = re.sub(r"[^A-Z0-9]+", "_", clean.upper()).strip("_")[:40] or "TEST"
+    code, n = f"{CUSTOM_CODE_PREFIX}{slug}", 2
+    while code in ANALYTE_LABELS or code in custom_analytes:
+        code, n = f"{CUSTOM_CODE_PREFIX}{slug}_{n}", n + 1
+    custom_analytes[code] = clean
+    return code, True
 
 
 def suggest_report_metadata(result: CandidateExtractionResult) -> ReportMetadataSuggestion:
@@ -266,6 +324,79 @@ def suggest_report_metadata(result: CandidateExtractionResult) -> ReportMetadata
 def is_result_like(candidate: CandidateExtraction) -> bool:
     """True when OCR found a value and unit on the line (worth reviewing as a result)."""
     return bool(candidate.raw_value and candidate.raw_unit)
+
+
+# Identification and administrative fields printed on lab reports. Each pattern
+# must match at the START of an OCR line (labels such as "DOB:" or "Referred by"),
+# so a result line that merely mentions a word later on is never caught.
+_IDENTIFICATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (category, re.compile(pattern, re.IGNORECASE))
+    for category, pattern in (
+        ("date of birth", r"^(?:dob|d\.\s?o\.\s?b\.?|date\s+of\s+birth|birth\s*date)\b"),
+        ("name", r"^(?:patient(?:'s)?\s*)?(?:first|last|middle|full|given|family|sur)?\s*name\b"),
+        ("name", r"^patient\s*(?::|name\b|details\b|information\b)"),
+        ("name", r"^(?:mr|mrs|ms|miss|mx|master)\.?\s+[a-z]"),
+        ("age / sex", r"^(?:age|sex|gender)\b"),
+        ("identifier", r"^(?:mrn|uhid|medical\s+record|patient\s*(?:id|no|number|#)|"
+                       r"id\b|i\.d\.|accession|acc(?:ession)?\.?\s*(?:no|#)|"
+                       r"(?:specimen|sample|lab|barcode|visit|encounter|account|order|"
+                       r"requisition|member|policy|reg(?:istration)?)\.?\s*(?:id|no|number|#)\b|"
+                       r"ssn\b|social\s+security|insurance)"),
+        ("address", r"^(?:address|street|city|state|zip|postal\s*code|country|apt|suite)\b"),
+        ("address", r"^\d+\s+[a-z].*\b(?:street|avenue|ave|road|rd|boulevard|blvd|lane|ln|"
+                    r"drive|court|way|place|terrace)\b\.?"),
+        ("contact", r"^(?:phone|tel(?:ephone)?|mobile|fax|e-?mail|contact)\b"),
+        ("contact", r"^cell\s*(?:phone\b|no\b|number\b|#|:)"),
+        ("report date", r"^(?:collected|collection|received|reported|registered|printed|"
+                        r"report\s+(?:date|status)|sample\s+(?:date|time)|date|time)\b"),
+        ("clinician", r"^(?:dr\.?\s+[a-z]|referred\s+by|referring|ordering|ordered\s+by|"
+                      r"requested\s+by|physician|doctor|provider|attending|pathologist|"
+                      r"lab\s+(?:director|incharge|in-charge)|verified\s+by|approved\s+by|"
+                      r"technologist|signature)"),
+        ("page footer", r"^page\s+\d+(?:\s+of\s+\d+)?\b"),
+    )
+)
+
+
+def identification_category(
+    candidate: CandidateExtraction, custom_analytes: Mapping[str, str] | None = None
+) -> str | None:
+    """Return why a line looks like an identification field, or None.
+
+    A line whose name is recognised as a lab test is never classified, so a real
+    result cannot be rejected by these rules.
+    """
+    if suggest_analyte_code(candidate.raw_analyte_name, custom_analytes):
+        return None
+    # Rebuild the whole line: "Page 1 of 2" parses as name "Page", value "1", unit "of".
+    text = " ".join(
+        part for part in (
+            candidate.raw_analyte_name, candidate.raw_value, candidate.raw_unit,
+            candidate.reference_interval,
+        ) if part
+    ).strip()
+    for category, pattern in _IDENTIFICATION_PATTERNS:
+        if pattern.search(text):
+            return category
+    return None
+
+
+def auto_reject_identification_lines(
+    result: CandidateExtractionResult, custom_analytes: Mapping[str, str] | None = None
+) -> dict[UUID, str]:
+    """Reject pending identification lines; return {candidate_id: category}.
+
+    Rejection is recorded so the patient can see each line and restore it.
+    """
+    rejected: dict[UUID, str] = {}
+    for candidate in result.candidates:
+        if candidate.lifecycle_status != "CANDIDATE":
+            continue
+        category = identification_category(candidate, custom_analytes)
+        if category:
+            candidate.lifecycle_status = "REJECTED"
+            rejected[candidate.candidate_id] = category
+    return rejected
 
 
 _CENSORED_VALUE = re.compile(r"^[<>≤≥]\s*\d+(?:\.\d+)?$")
@@ -304,14 +435,15 @@ def accept_candidate(
     source_lab: str,
     collected: date,
     accepted_at: datetime,
+    custom_analytes: Mapping[str, str] | None = None,
 ) -> AcceptedObservation:
     """Turn a patient's accept/correct decision into an AcceptedObservation.
 
     The patient-supplied fields are authoritative. If any differ from what the
     extractor proposed, the observation is marked CORRECTED_BY_PATIENT.
     """
-    if analyte_code not in ANALYTE_LABELS:
-        raise ValueError("Choose a supported analyte before accepting.")
+    if analyte_code not in ANALYTE_LABELS and analyte_code not in (custom_analytes or {}):
+        raise ValueError("Choose a test from the list, or enter its name, before accepting.")
     value = value.strip()
     unit = unit.strip()
     reference_interval = (reference_interval or "").strip() or None
@@ -412,6 +544,31 @@ def confirm_page_coverage(
             else inv
             for inv in result.page_inventories
         ),
+    )
+
+
+def reopen_page_coverage(
+    result: CandidateExtractionResult, page_number: int
+) -> CandidateExtractionResult:
+    """Withdraw a page's completeness confirmation (e.g. a line was restored for review)."""
+    return replace(
+        result,
+        page_inventories=tuple(
+            replace(inv, inventory_status="INCOMPLETE")
+            if inv.page_number == page_number
+            else inv
+            for inv in result.page_inventories
+        ),
+    )
+
+
+def line_text(candidate: CandidateExtraction) -> str:
+    """The OCR line as one string, for display."""
+    return " ".join(
+        part for part in (
+            candidate.raw_analyte_name, candidate.raw_value, candidate.abnormal_flag,
+            candidate.raw_unit, candidate.reference_interval,
+        ) if part
     )
 
 

@@ -301,11 +301,11 @@ Status: **Built** works end to end in the demo; **Partial** works with the state
 | FR-01 | Upload PDF, PNG, JPEG | Built (25 MiB and pixel limits) | `app.ingest`, `extract_document_ocr_line_candidates` | extraction, smoke |
 | FR-02 | Register report metadata | Partial: lab, collection date, printed name; no report date, ordering clinician, or type | `suggest_report_metadata`, Upload page | workflow |
 | FR-03 | Extract candidate rows with location | Partial: analyte, value, unit, range, flag, page, box; no specimen type | `labtrail_extraction` | extraction, benchmark |
-| FR-04 | Map analytes to codes | Partial: 191 tests from the versioned table `reference/lab_tests.csv` suggested from printed names, abbreviations, and OCR look-alikes (ambiguous names are never guessed); patient chooses; internal codes, not LOINC | `suggest_analyte_code`, `load_analyte_table` | workflow |
+| FR-04 | Map analytes to codes | Partial: 191 tests from the versioned table `reference/lab_tests.csv` suggested from printed names, abbreviations, and OCR look-alikes (ambiguous names are never guessed); patient chooses, or enters a new test name that is kept in their encrypted record and suggested on later uploads; internal codes, not LOINC | `suggest_analyte_code`, `load_analyte_table`, `add_custom_analyte` | workflow, smoke |
 | FR-05 | Deterministic unit outcomes | Built: unit rules for glucose and lipids; other tests are charted as reported only when every result shares one unit; text results ("Negative", "<0.5") are kept as printed and listed | `normalize_value`, `CONVERSION_FACTORS`, `plan_chart` | algorithms, workflow |
 | FR-06 | Duplicate detection | Partial: identical files skipped with a warning; duplicate results flagged on timeline | `app.ingest`, `find_duplicate_observation_groups` | algorithms |
 | FR-07 | Comparability markers | Built | `compare_adjacent_observations`, `analyte_timeline` | algorithms, workflow, smoke |
-| FR-08 | No automatic acceptance | Built: every OCR line is mandatory review | `partition_review_queue`, Review page | algorithms, smoke |
+| FR-08 | No automatic acceptance | Built: every OCR line is mandatory review; lines that start with an identification label (name, DOB, ID, address, contact, report dates, clinician, page footer) are rejected automatically, listed with the reason, and restorable; lines naming a known test never are | `partition_review_queue`, `auto_reject_identification_lines`, Review page | algorithms, workflow, smoke |
 | FR-09 | Accept, correct, reject with provenance | Built (activity log is local, not hash-chained) | `accept_candidate` | workflow, smoke |
 | FR-10 | Link value to source region | Built: **Source** on any timeline row shows the cropped region and whole page, or says the region is unavailable | `app._show_source` | smoke |
 | FR-11 | Context notes | Partial: create and link to analytes; no editing | Timeline page | workflow (share scoping) |
@@ -331,7 +331,7 @@ accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
 
 ## 7. Validation summary
 
-- **158 automated tests** run on every push (GitHub Actions), including a test that
+- **205 automated tests** run on every push (GitHub Actions), including a test that
   drives the real app through upload, review, timeline, redacted share, and
   encrypted save.
 - **Extraction accuracy** (row exact: value, unit, and range all correct): 100% on

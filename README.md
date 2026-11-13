@@ -16,7 +16,8 @@ The demo walks through one end-to-end slice with synthetic data only:
 1. **Upload**: load PDF/PNG/JPEG reports (or the three samples) and confirm the lab,
    collection date, and that the printed name is yours.
 2. **Review**: accept, correct, or reject each extracted row next to a crop of the
-   source page. Nothing enters the record automatically.
+   source page. Nothing enters the record automatically. A test missing from the list can be
+   entered by name; it stays in your list (and encrypted record) for later uploads.
 3. **Timeline**: one chart per test across labs (191 tests listed in
    `reference/lab_tests.csv`), converted with a versioned unit table, with markers when the lab, unit, or reference range changes. Values with no
    supported conversion (e.g. HbA1c in mmol/mol) are listed, not plotted.

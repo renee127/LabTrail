@@ -294,10 +294,13 @@ def send_share(
     withheld_pages: list[dict],
     server: ShareServer,
     now: datetime,
+    analyte_names: dict[str, str] | None = None,
 ) -> SentShare:
     """Encrypt the bundle on the client, split the key, and register with the server.
 
     redacted_pages: [{"label": str, "png": bytes}]; withheld_pages: [{"label", "reason"}].
+    analyte_names maps each shared code to its display name, so the recipient sees
+    names for tests the patient added, which no reference table contains.
     """
     bundle = {
         "schema_version": SCHEMA_VERSION,
@@ -307,6 +310,7 @@ def send_share(
         "payload": json.loads(share_payload),
         "pages": [{"label": p["label"], "png": _b64(p["png"])} for p in redacted_pages],
         "withheld_pages": withheld_pages,
+        "analyte_names": dict(analyte_names or {}),
     }
     plaintext = zlib.compress(json.dumps(bundle, separators=(",", ":")).encode("utf-8"))
 

@@ -37,7 +37,7 @@ def _send(server: ShareServer, *, days: int = 14):
         grant=grant, recipient_email=EMAIL, share_payload=PAYLOAD,
         redacted_pages=[{"label": "report.pdf p.1", "png": PNG}],
         withheld_pages=[{"label": "other.pdf p.1", "reason": "not confirmed"}],
-        server=server, now=NOW,
+        server=server, now=NOW, analyte_names={"GLUCOSE": "Glucose"},
     )
     return grant, sent
 
@@ -52,6 +52,7 @@ def _open(server, sent, *, code=None, email=EMAIL, share=None, now=NOW):
 def test_recipient_with_link_code_and_email_can_open(server) -> None:
     _, sent = _send(server)
     bundle = _open(server, sent, email="  clinician@example.ORG ")
+    assert bundle["analyte_names"] == {"GLUCOSE": "Glucose"}
     assert bundle["payload"] == json.loads(PAYLOAD)
     assert bundle["pages"][0]["png"] == PNG
     assert bundle["withheld_pages"][0]["reason"] == "not confirmed"

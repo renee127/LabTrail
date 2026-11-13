@@ -29,6 +29,11 @@ from labtrail_workflow import (
     SIDEBAR_NOTICE,
     TIMELINE_NOTICE,
     accept_candidate,
+    auto_reject_identification_lines,
+    line_text,
+    reopen_page_coverage,
+    add_custom_analyte,
+    all_analyte_labels,
     analyte_timeline,
     build_share,
     confirm_page_coverage,
@@ -59,7 +64,14 @@ def _state():
     ss.setdefault("activity", [])       # (timestamp, message)
     ss.setdefault("confirmed_identities", set())  # (lab, exact printed name)
     ss.setdefault("sent_shares", [])    # dicts: grant id, recipient, link, code
+    ss.setdefault("custom_analytes", {})  # code -> test name the patient added
+    ss.setdefault("auto_rejected", {})    # candidate id -> identification category
     return ss
+
+
+def _labels() -> dict[str, str]:
+    """Reference tests plus tests this patient added."""
+    return all_analyte_labels(_state().custom_analytes)
 
 
 def _now() -> datetime:
@@ -106,6 +118,10 @@ def ingest(filename: str, data: bytes, mime_type: str) -> None:
     for candidate in result.candidates:
         ss.candidates[candidate.candidate_id] = candidate
     _log(f"Uploaded {filename}: {len(result.candidates)} text lines found")
+    rejected = auto_reject_identification_lines(result, ss.custom_analytes)
+    ss.auto_rejected.update(rejected)
+    if rejected:
+        _log(f"Rejected {len(rejected)} identification lines on {filename} automatically")
 
 
 def page_upload() -> None:
@@ -235,6 +251,31 @@ def _coverage_confirmation(report_id: UUID, report: dict) -> None:
                     st.rerun()
 
 
+def _auto_rejected_panel(report_id: UUID, report: dict) -> None:
+    """Show identification lines rejected on upload, each restorable for review."""
+    ss = _state()
+    lines = [c for c in report["result"].candidates if c.candidate_id in ss.auto_rejected]
+    if not lines:
+        return
+    with st.expander(
+        f"{len(lines)} identification lines rejected automatically (names, dates, IDs, addresses)"
+    ):
+        st.caption(
+            "These look like report details, not lab results, so they were rejected for you. "
+            "Restore any line that is actually a result."
+        )
+        for c in lines:
+            text_col, why_col, button_col = st.columns([5, 2, 1])
+            text_col.text(line_text(c))
+            why_col.caption(ss.auto_rejected[c.candidate_id])
+            if button_col.button("Restore", key=f"restore-{c.candidate_id}"):
+                c.lifecycle_status = "CANDIDATE"
+                del ss.auto_rejected[c.candidate_id]
+                report["result"] = reopen_page_coverage(report["result"], c.page_number)
+                _log(f"Restored “{line_text(c)}” for review")
+                st.rerun()
+
+
 def page_review() -> None:
     ss = _state()
     st.header("2 · Review extracted results")
@@ -247,7 +288,13 @@ def page_review() -> None:
         st.info("Confirm at least one report on the **Upload** page first.")
         return
 
-    analyte_options = ["(choose)"] + sorted(ANALYTE_LABELS, key=lambda c: ANALYTE_LABELS[c].casefold())
+    labels = _labels()
+    analyte_options = ["(choose)"] + sorted(labels, key=lambda c: labels[c].casefold())
+    if ss.custom_analytes:
+        with st.expander(f"Tests you added ({len(ss.custom_analytes)})"):
+            st.caption("These stay in your list for future uploads and are saved with your encrypted record.")
+            for name in sorted(ss.custom_analytes.values(), key=str.casefold):
+                st.write(f"- {name}")
     for report_id, report in confirmed:
         mandatory, standard = partition_review_queue(
             ss.candidates[c.candidate_id] for c in report["result"].candidates
@@ -257,6 +304,7 @@ def page_review() -> None:
         other = [c for c in pending if not is_result_like(c)]
         meta = report["confirmed"]
         st.subheader(f"{meta['lab']} · {meta['collected']}")
+        _auto_rejected_panel(report_id, report)
         if not pending:
             _coverage_confirmation(report_id, report)
             continue
@@ -280,34 +328,50 @@ def page_review() -> None:
                         st.image(crop, caption=f"Source: page {c.page_number}")
                     st.caption(f"OCR confidence {c.field_confidences['value']:.0%}")
                 with form_col, st.form(f"review-{c.candidate_id}"):
-                    suggested = suggest_analyte_code(c.raw_analyte_name)
+                    suggested = suggest_analyte_code(c.raw_analyte_name, ss.custom_analytes)
                     a, v, u, r = st.columns([3, 2, 2, 2])
                     code = a.selectbox(
                         f"Analyte (read as “{c.raw_analyte_name}”)",
                         analyte_options,
                         index=analyte_options.index(suggested) if suggested else 0,
-                        format_func=lambda k: ANALYTE_LABELS.get(k, k),
+                        format_func=lambda k: labels.get(k, k),
                     )
                     value = v.text_input("Value", value=c.raw_value or "")
                     unit = u.text_input("Unit", value=c.raw_unit or "")
                     ref = r.text_input("Reference range", value=c.reference_interval or "")
+                    new_name = st.text_input(
+                        "Not in the list? Enter the test name",
+                        key=f"newname-{c.candidate_id}",
+                        placeholder="" if suggested else c.raw_analyte_name,
+                        help="If filled in, this name is used instead of the list above, and it "
+                        "stays in your list for future uploads.",
+                    )
                     accept_col, reject_col = st.columns(2)
                     accept = accept_col.form_submit_button("Accept", type="primary", width="stretch")
                     reject = reject_col.form_submit_button("Reject", width="stretch")
                 if accept:
+                    # Work on a copy so a failed accept never leaves a stray new test name.
+                    custom = dict(ss.custom_analytes)
+                    created = False
                     try:
+                        if new_name.strip():
+                            code, created = add_custom_analyte(new_name, custom)
                         observation = accept_candidate(
                             c, analyte_code=code, value=value, unit=unit,
                             reference_interval=ref, source_lab=meta["lab"],
                             collected=meta["collected"], accepted_at=_now(),
+                            custom_analytes=custom,
                         )
                     except ValueError as error:
                         st.error(str(error))
                     else:
+                        ss.custom_analytes = custom
+                        if created:
+                            _log(f"Added “{custom[code]}” to your test list")
                         ss.observations.append(observation)
                         _decide(c, "ACCEPTED")
                         how = "corrected" if observation.provenance_flag == "CORRECTED_BY_PATIENT" else "accepted"
-                        _log(f"{how.capitalize()} {ANALYTE_LABELS[code]} {value} {unit} from {meta['lab']}")
+                        _log(f"{how.capitalize()} {_labels()[code]} {value} {unit} from {meta['lab']}")
                         st.rerun()
                 if reject:
                     _decide(c, "REJECTED")
@@ -345,8 +409,8 @@ def _chart_row(observation) -> dict:
     }
 
 
-def _axis_title(code: str, unit: str | None, as_reported: bool) -> str:
-    label = ANALYTE_LABELS.get(code, code)
+def _axis_title(code: str, unit: str | None, as_reported: bool, labels: dict[str, str]) -> str:
+    label = labels.get(code, code)
     if not unit:
         return label
     return f"{label} ({unit}{', as reported' if as_reported else ''})"
@@ -365,13 +429,12 @@ def page_timeline() -> None:
         st.info("Accept some results on the **Review** page first.")
         return
 
-    available = sorted(
-        {o.analyte_code for o in active}, key=lambda c: ANALYTE_LABELS.get(c, c).casefold()
-    )
+    labels = _labels()
+    available = sorted({o.analyte_code for o in active}, key=lambda c: labels.get(c, c).casefold())
     if len(available) <= 6:
-        code = st.radio("Analyte", available, format_func=ANALYTE_LABELS.get, horizontal=True)
+        code = st.radio("Analyte", available, format_func=lambda c: labels.get(c, c), horizontal=True)
     else:
-        code = st.selectbox("Analyte", available, format_func=ANALYTE_LABELS.get)
+        code = st.selectbox("Analyte", available, format_func=lambda c: labels.get(c, c))
     points = analyte_timeline(ss.observations, code)
     plan = plan_chart([_chart_row(p.observation) for p in points])
     plotted = [points[i] for i in plan.plotted]
@@ -393,7 +456,7 @@ def page_timeline() -> None:
         tooltip = ["date:T", "value:Q", "lab:N", "as reported:N", "reference range:N", "comparability:N"]
         line = alt.Chart(df).mark_line(color="#888").encode(
             x=alt.X("date:T", title="Collection date"),
-            y=alt.Y("value:Q", title=_axis_title(code, unit, plan.as_reported), scale=alt.Scale(zero=False)),
+            y=alt.Y("value:Q", title=_axis_title(code, unit, plan.as_reported, labels), scale=alt.Scale(zero=False)),
         )
         dots = alt.Chart(df).mark_point(size=120, filled=True).encode(
             x="date:T", y="value:Q", shape=alt.Shape("lab:N", title="Lab"), tooltip=tooltip
@@ -430,7 +493,7 @@ def page_timeline() -> None:
         )
         if cols[6].button("Retract", key=f"retract-{o.observation_id}", help="Remove from timeline and future shares"):
             o.lifecycle_status = "RETRACTED_BY_PATIENT"
-            _log(f"Retracted {ANALYTE_LABELS[o.analyte_code]} {o.original_value} {o.original_unit} ({o.collection_datetime})")
+            _log(f"Retracted {labels.get(o.analyte_code, o.analyte_code)} {o.original_value} {o.original_unit} ({o.collection_datetime})")
             st.rerun()
         if cols[7].button("Source", key=f"source-{o.observation_id}", help="Show where this value came from"):
             ss.source_view = None if ss.get("source_view") == o.observation_id else o.observation_id
@@ -457,7 +520,7 @@ def page_timeline() -> None:
         with st.form("note"):
             note_date = st.date_input("Date", value=date.today(), format="YYYY-MM-DD")
             category = st.selectbox("Category", NOTE_CATEGORIES, format_func=lambda c: c.replace("_", " ").title())
-            analytes = st.multiselect("Related analytes", available, default=[code], format_func=ANALYTE_LABELS.get)
+            analytes = st.multiselect("Related analytes", available, default=[code], format_func=lambda c: labels.get(c, c))
             body = st.text_input("Note", placeholder="e.g. Started metformin 500 mg")
             if st.form_submit_button("Add note") and body.strip() and analytes:
                 now = _now()
@@ -541,13 +604,14 @@ def _send_prepared() -> None:
         grant=grant, recipient_email=prepared["email"], share_payload=prepared["payload"],
         redacted_pages=prepared["pages"], withheld_pages=prepared["withheld"],
         server=_server(), now=_now(),
+        analyte_names={a: _labels().get(a, a) for a in grant.granted_analytes},
     )
     link = f"{_base_url()}/?share={sent.grant_id}&k={b64url(sent.recipient_share)}"
     record = {
         "grant_id": str(sent.grant_id),
         "recipient": grant.recipient_name,
         "email": prepared["email"],
-        "analytes": [ANALYTE_LABELS[a] for a in grant.granted_analytes],
+        "analytes": [_labels().get(a, a) for a in grant.granted_analytes],
         "range": f"{grant.range_start} to {grant.range_end}",
         "expires": f"{grant.expires_at:%Y-%m-%d}",
         "sent_at": f"{_now():%Y-%m-%d %H:%M}",
@@ -625,10 +689,11 @@ def page_share() -> None:
         _sent_shares_panel()
         return
     dates = [o.collection_datetime for o in active]
-    available = [code for code in ANALYTE_LABELS if any(o.analyte_code == code for o in active)]
+    labels = _labels()
+    available = sorted({o.analyte_code for o in active}, key=lambda c: labels.get(c, c).casefold())
 
     with st.form("share"):
-        analytes = st.multiselect("Analytes", available, default=available[:1], format_func=ANALYTE_LABELS.get)
+        analytes = st.multiselect("Analytes", available, default=available[:1], format_func=lambda c: labels.get(c, c))
         start, end = st.columns(2)
         range_start = start.date_input("From", value=min(dates), format="YYYY-MM-DD")
         range_end = end.date_input("To", value=max(dates), format="YYYY-MM-DD")
@@ -743,6 +808,7 @@ def page_recipient(grant_param: str, key_param: str) -> None:
         st.rerun()
 
     payload = bundle["payload"]
+    names = {**ANALYTE_LABELS, **bundle.get("analyte_names", {})}
     st.write(
         f"For **{bundle['recipient_name']}** · results from {payload['range_start']} to "
         f"{payload['range_end']} · access until {bundle['expires_at'][:10]}"
@@ -751,7 +817,7 @@ def page_recipient(grant_param: str, key_param: str) -> None:
     for o in payload["observations"]:
         by_analyte.setdefault(o["analyte_code"], []).append(o)
     for code, rows in by_analyte.items():
-        st.subheader(ANALYTE_LABELS.get(code, code))
+        st.subheader(names.get(code, code))
         plan = plan_chart(rows)
         plotted = [rows[i] for i in plan.plotted]
         if plotted:
@@ -762,7 +828,7 @@ def page_recipient(grant_param: str, key_param: str) -> None:
             ])
             chart = alt.Chart(df).mark_line(point=alt.OverlayMarkDef(size=90, filled=True), color="#888").encode(
                 x=alt.X("date:T", title="Collection date"),
-                y=alt.Y("value:Q", title=_axis_title(code, plan.unit, plan.as_reported),
+                y=alt.Y("value:Q", title=_axis_title(code, plan.unit, plan.as_reported, names),
                         scale=alt.Scale(zero=False)),
                 tooltip=["date:T", "value:Q", "lab:N"],
             )
@@ -792,8 +858,11 @@ def page_recipient(grant_param: str, key_param: str) -> None:
 
 # ---------------------------------------------------------------- vault
 
-_VAULT_KEYS = ("reports", "observations", "notes", "activity", "confirmed_identities", "sent_shares")
-_VAULT_DEFAULTS = {"sent_shares": list}
+_VAULT_KEYS = (
+    "reports", "observations", "notes", "activity", "confirmed_identities", "sent_shares",
+    "custom_analytes", "auto_rejected",
+)
+_VAULT_DEFAULTS = {"sent_shares": list, "custom_analytes": dict, "auto_rejected": dict}
 
 
 def vault_panel() -> None:

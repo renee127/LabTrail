@@ -158,3 +158,82 @@ def test_encrypted_record_round_trip_through_the_ui() -> None:
     record = decrypt_record(vault_file, "correct horse battery")
     assert len(record["reports"]) == 3
     assert sum(r["confirmed"] is not None for r in record["reports"].values()) == 1
+
+
+def test_patient_can_add_a_test_name_that_persists(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LABTRAIL_SERVER_DIR", str(tmp_path))
+    at = AppTest.from_file("../app.py", default_timeout=120)
+    at.run()
+    _click(at, "Load 3 synthetic sample reports")
+    at.checkbox[0].check()
+    _click(at, "Confirm report")
+    at.sidebar.radio[0].set_value("Review")
+    at.run()
+
+    # A failed accept (misread value) must not add the name.
+    first = next(t for t in at.text_input if t.key and t.key.startswith("newname-"))
+    first.input("Homocysteine")
+    next(t for t in at.text_input if t.label == "Value").input("1O4")
+    _click(at, "Accept")
+    assert any("not a number" in e.value for e in at.error)
+    assert at.session_state["custom_analytes"] == {}
+
+    # Fix the value: the row is accepted under the new name, which is kept.
+    next(t for t in at.text_input if t.label == "Value").input("11.2")
+    first = next(t for t in at.text_input if t.key and t.key.startswith("newname-"))
+    first.input("Homocysteine")
+    _click(at, "Accept")
+    assert not at.exception
+    assert list(at.session_state["custom_analytes"].values()) == ["Homocysteine"]
+    code = next(iter(at.session_state["custom_analytes"]))
+    assert at.session_state["observations"][-1].analyte_code == code
+    assert any(e.label.startswith("Tests you added (1)") for e in at.expander)
+    assert "Homocysteine" in at.selectbox[0].options  # offered for every later row
+
+    # The name is saved inside the encrypted record.
+    at.sidebar.text_input(key="vault-save-pass").input("correct horse battery")
+    at.run()
+    _click(at, "Encrypt record")
+    from labtrail_vault import decrypt_record
+    record = decrypt_record(at.session_state["vault_file"], "correct horse battery")
+    assert record["custom_analytes"] == {code: "Homocysteine"}
+    assert b"Homocysteine" not in at.session_state["vault_file"]
+
+
+def test_identification_lines_are_rejected_on_upload_and_restorable(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LABTRAIL_SERVER_DIR", str(tmp_path))
+    at = AppTest.from_file("../app.py", default_timeout=120)
+    at.run()
+    _click(at, "Load 3 synthetic sample reports")
+    for _ in range(3):
+        at.checkbox[0].check()
+        _click(at, "Confirm report")
+    candidates = at.session_state["candidates"]
+    rejected = at.session_state["auto_rejected"]
+    texts = {candidates[cid].raw_analyte_name: why for cid, why in rejected.items()}
+    assert texts == {
+        "Patient: Jordan Sample": "name",
+        "Collected: 2026-02-10": "report date",
+        "Collected: 2026-05-18": "report date",
+        "Collected: 2026-09-03": "report date",
+    }
+    assert len(rejected) == 6  # two lines on each of three reports
+
+    at.sidebar.radio[0].set_value("Review")
+    at.run()
+    assert sum(e.label.startswith("2 identification lines rejected") for e in at.expander) == 3
+
+    # Finish the first report and confirm its page, then restore a line.
+    while any(b.label == "Accept" for b in at.button):
+        _click(at, "Accept")
+    while any(b.label.startswith("Reject these") for b in at.button):
+        _click(at, "Reject these")
+    at.checkbox[0].check()
+    at.run()
+    _click(at, "Confirm page 1 is complete")
+    _click(at, "Restore")
+    assert len(at.session_state["auto_rejected"]) == 5
+    restored = [c for c in candidates.values() if c.lifecycle_status == "CANDIDATE"]
+    assert len(restored) == 1
+    report = at.session_state["reports"][restored[0].report_id]
+    assert report["result"].page_inventories[0].inventory_status == "INCOMPLETE"
