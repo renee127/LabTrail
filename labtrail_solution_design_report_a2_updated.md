@@ -141,14 +141,14 @@ This baseline carries forward `FR-01` through `FR-22` from Assignment 1 (incorpo
 | **FR-06** | Should | Detect duplicate report files (SHA-256 hash) or duplicate `(analyte, collection_timestamp, source_lab)` entries and route to patient decision. | Re-uploading an identical PDF flags a duplicate reference without inserting duplicate timeline points unless explicitly overridden. |
 | **FR-07** | Must | Flag a longitudinal series as not directly comparable wherever source laboratory, assay method note, unit basis, or reference interval changes between consecutive values. | Comparability discontinuity markers render at transition points in patient timelines, exports, and recipient views, naming the differing attribute. |
 | **FR-08** | Must | Route low-confidence, internally inconsistent, or conflicting extractions to patient review; prohibit automatic acceptance into the longitudinal record. | Audit log confirms 100% of accepted values have an explicit patient acceptance event; degraded inputs remain in `PENDING_REVIEW`. |
-| **FR-09** | Must | Allow the patient to accept, correct, or reject each candidate, recording actor, timestamp, prior value, and new value; corrected values carry `CORRECTED_BY_PATIENT` provenance. | Corrected values appear on timelines and deterministic calculations with `CORRECTED_BY_PATIENT` badge; prior values remain auditable. |
+| **FR-09** | Must | Allow the patient to accept, correct, or reject each candidate, recording actor and timestamp; prior/new clinical values in audit details are encrypted on `Z1` before entering the `Z3` log. Corrected values carry `CORRECTED_BY_PATIENT` provenance. | Corrected values appear on timelines and deterministic calculations with `CORRECTED_BY_PATIENT` badge; the patient can decrypt and audit prior/new values, while no plaintext clinical values enter the server audit envelope. |
 | **FR-10** | Must | Link every accepted value to its source report, page number, and bounding box (where captured) in one user action; mark missing regions `REGION_UNAVAILABLE`. | Clicking any timeline value opens the source artifact at the exact page with region highlight (or `REGION_UNAVAILABLE` notice for patient). |
 | **FR-11** | Must | Allow the patient to create, edit, and associate dated context notes (medication change, diet, illness, activity, free text) with one or more analytes. | Context notes appear at their recorded timestamps on associated analyte timelines with creation/modification timestamps. |
 | **FR-12** | Must | Display for a selected analyte all accepted canonical values in chronological order with units, reference interval, source lab, review provenance, comparability markers, context notes, and source-attributed abnormal flags; list unconvertible (`FR-05` outcome 3) values separately below the chart. | Fixture timeline renders all required attributes; abnormal flags display source lab attribution; unconvertible values never plot on the canonical axis. |
 | **FR-13** | Must | Compute displayed summary measures strictly via deterministic arithmetic over accepted values; emit zero interpretation, diagnosis, prognosis, risk score, or recommendation. | Automated prohibited-phrase scanner and manual inspection confirm zero interpretive text across UI, exports, and recipient views. |
 | **FR-14** | Must | Allow the patient to create a share grant scoped to a named recipient, explicit analyte list, date range, and mandatory expiration timestamp (`NFR-02`). | Attempt to create an unscoped or non-expiring grant is rejected; recipient sees strictly the granted analytes and dates. |
 | **FR-15** | Must | Allow the patient to revoke any active grant at any time, destroying server-held key material and denying subsequent access within 5 seconds (`NFR-12`). | Timed revocation test confirms server `Server_Share` destruction and HTTP `403` denial on recipient requests within $\le 5.0\text{ s}$ of revocation acceptance. |
-| **FR-16** | Must | Maintain an immutable, patient-visible access log of every grant creation, revocation, verification failure, and recipient access event with verified identity, scope, and timestamp. | Access log displays complete event history; attempts by any role to modify or delete log entries fail and generate security audit events. |
+| **FR-16** | Must | Maintain an immutable, patient-visible access log of every grant creation, revocation, verification failure, and recipient access event with verified identity, scope, and timestamp. `Z3` stores an opaque verified actor identifier and grant target; `Z1` resolves patient identity from `PatientAccount` and recipient display identity/scope from `ClientShareGrant`. | Access log displays complete event history and locally resolved identity/scope; no plaintext scope enters the server audit envelope, and attempts by any role to modify or delete log entries fail and generate security audit events. |
 | **FR-17** | Must | Present recipients with a read-only browser view of granted values (with provenance, review status, comparability flags, redacted source pages per `FR-19`, and printable summary). | Recipient UI exposes zero edit controls; printable summary and rendered views preserve all provenance and comparability markers. |
 | **FR-18** | Should | Allow the patient to export the complete accepted record in an open documented JSON/CSV schema bundled with original source files. | Independent parser built against the published schema reconstructs all accepted timelines and provenance links without loss. |
 | **FR-19** | Must | Render source pages served to recipients as flattened raster images with every ungranted result row masked and labeled `REDACTED`; never redact the patient's own view. | Single-analyte grant from a 12-analyte panel serves a flattened PNG where the other 11 rows are masked and OCR/text extraction yields zero ungranted text (`NFR-19`). |
@@ -174,7 +174,7 @@ This baseline carries forward `FR-01` through `FR-22` from Assignment 1 (incorpo
 | **NFR-10** | Readability | Every displayed value presents units, reference interval, and source laboratory; zero reliance on color alone; WCAG 2.1 AA contrast compliance across all views. |
 | **NFR-11** | Response Time | Extraction of a $\le 6$-page report completes in $\le 60\text{ s}$ ($p_{95}$); single-analyte timeline at 500 accepted values renders in $\le 2.0\text{ s}$ ($p_{95}$). |
 | **NFR-12** | Revocation Latency | Revocation takes effect within $\le 5.0\text{ s}$ measured from server acknowledgment ($t_{\text{ack}}$) of the patient's revocation request, enforced via authoritative grant reads or bounded revocable leases ($\text{TTL} + \Delta_{\text{skew}} < 5.0\text{ s}$) failing closed. |
-| **NFR-13** | Auditability | All review, grant, revocation, retraction, and recipient access events write to a cryptographic hash-chained append-only audit log unmodifiable by any role. |
+| **NFR-13** | Auditability | All review, grant, revocation, retraction, and recipient access events write to a cryptographic hash-chained append-only audit log unmodifiable by any role. Hashes cover the canonical event envelope, including any client-encrypted details and nonce; no plaintext clinical values or grant scope are stored in server-readable audit fields. |
 | **NFR-14** | Portability | Complete record export (2,000 accepted values + original source files) completes in $\le 10\text{ minutes}$ in an open, documented schema. |
 | **NFR-15** | Availability | 99.5% monthly availability; degraded extraction service does not block reading accepted records; revocation/expiry enforcement always fails closed if authoritative state is unreachable. |
 | **NFR-16** | Regulatory Boundary | Operates strictly as a non-diagnostic Personal Health Record (PHR); any feature touching interpretation or alerting requires documented `SH-06` sign-off prior to implementation. |
@@ -307,7 +307,7 @@ classDiagram
         +UUID note_id
         +String category
         +Date note_date
-        +String encrypted_body
+        +String body
         +List~String~ analyte_codes
         +Timestamp created_at
         +Timestamp updated_at
@@ -331,14 +331,14 @@ classDiagram
         +String second_factor_verifier_hash
         +Integer failed_attempts
         +String schema_version
-        +Bytes server_share
+        +Optional~Bytes~ server_share
         +Bytes iv_nonce
         +String bundle_blob_uri
         +String status
         +Timestamp created_at
         +Timestamp expires_at
-        +Timestamp revoked_at
-        +Timestamp lease_expires_at
+        +Optional~Timestamp~ revoked_at
+        +Optional~Timestamp~ lease_expires_at
     }
 
     class AuditEvent {
@@ -347,8 +347,9 @@ classDiagram
         +String actor_role
         +String actor_identifier
         +UUID target_id
-        +JSON metadata
-        +String prev_event_hash
+        +Optional~Bytes~ details_ciphertext
+        +Optional~Bytes~ details_nonce
+        +Optional~String~ prev_event_hash
         +String event_hash
         +Timestamp occurred_at
     }
@@ -369,13 +370,23 @@ classDiagram
     AcceptedObservation "1" --> "0..*" AuditEvent : logged in
 ```
 
-**Figure 4 — Core Domain Model.** Patient-owned classes (`PatientAccount`, `ConfirmedIdentity`, `SourceReport`, `CandidateExtraction`, `AcceptedObservation`, `ContextNote`, and `ClientShareGrant`) are managed in `Z1`; sensitive fields are encrypted under the Patient Master Key hierarchy before any persistence in `Z3`. `ClientShareGrant` holds the patient's recipient and scope choices on `Z1`; selected observations and relevant context are copied into an immutable encrypted bundle. The corresponding `GrantRecord` in `Z3` contains only operational authorization metadata, cryptographic material, expiry/state, and a ciphertext pointer—not the recipient's display name, analyte scope, or date range. Audit metadata must not contain clinical values or share scope.
+**Figure 4 — Core Domain Model.** Patient-owned classes (`PatientAccount`, `ConfirmedIdentity`, `SourceReport`, `CandidateExtraction`, `AcceptedObservation`, `ContextNote`, and `ClientShareGrant`) are managed in `Z1`; sensitive fields are encrypted under the Patient Master Key hierarchy before any persistence in `Z3`. `ClientShareGrant` holds the patient's recipient and scope choices on `Z1`; selected observations and relevant context are copied into an immutable encrypted bundle. The corresponding `GrantRecord` in `Z3` contains only operational authorization metadata, cryptographic material, expiry/state, and a ciphertext pointer—not the recipient's display name, analyte scope, or date range. The `AuditEvent` server envelope contains no plaintext clinical values or grant scope: patient review details, including prior/new correction values, are encrypted on `Z1` and included as opaque ciphertext in the hash chain; the patient UI resolves recipient identity and scope locally by matching the grant target to `ClientShareGrant`.
 
 `SourceReport` metadata may be incomplete at upload and is completed by the patient before timeline use. Its uploaded artifact and hash remain immutable. Collection and report values preserve date-only or date-time precision, including a timezone offset only when the source provides one; no time or offset is fabricated. A report links to at most one patient-confirmed lab identity, and one confirmed rendering may match multiple reports.
 
 `CandidateExtraction` retains optional `method_note` for comparability and copies the extraction job's model identifier, model version, prompt hash, and extraction timestamp onto each persisted candidate. Its field-confidence object contains exactly `analyte`, `value`, `unit`, and `region`, each in `[0, 1]`. A bounding box is `[x_min, y_min, x_max, y_max]` with normalized coordinates; it is null exactly when `region_available` is false. `routing_status` is separate from the candidate's lifecycle and never accepts a value automatically.
 
 `AcceptedObservation` stores one of the three deterministic conversion outcomes. `UNCONVERTIBLE_RETAINED` requires a reason and has no canonical value or conversion factor; a canonical unit is optional when no target is defined. It snapshots source page and optional bounding box (`null` means `REGION_UNAVAILABLE`), preserves date-only or date-time collection precision, and keeps lifecycle status separate from `AS_EXTRACTED` or `CORRECTED_BY_PATIENT` provenance. Optional source `method_note` values are preserved for FR-07 comparability checks.
+
+`ContextNote.category` is one of `MEDICATION_CHANGE`, `DIET`, `ILLNESS`, `ACTIVITY`, or `FREE_TEXT`. Each note is linked to one or more unique analyte codes, and `updated_at` cannot precede `created_at`.
+
+`ContextNote` is a Z1 in-memory model. The persistence layer encrypts the entire serialized note, including category, date, and analyte associations, before storing it in Z3.
+
+`ClientShareGrant` requires a named recipient, a non-empty unique analyte scope, an ordered date range, and expiry after creation but no more than five calendar years later. `local_status` follows the grant lifecycle states in Figure 6; recipient name and scope remain on Z1 and inside the encrypted bundle rather than being sent as plaintext to Z3.
+
+`GrantRecord.status` follows Figure 6 after registration. An active record has a 32-byte `server_share`; locked, expired, revoked, and bundle-refreshing records do not retain it. `revoked_at` is present only for `REVOKED`; `lease_expires_at` is optional and cannot exceed `expires_at`. `iv_nonce` is a 12-byte AES-GCM nonce, and `bundle_blob_uri` points to ciphertext stored in Z3.
+
+`AuditEvent` has no unrestricted plaintext metadata field. `details_ciphertext` and its 12-byte nonce are present together or absent together; patient-entered review details are encrypted on `Z1`, with canonical public event fields bound as authenticated data. The event hash covers the canonical envelope, including ciphertext and nonce when present. Hashes are lowercase 64-character SHA-256 hex digests. The first event in a chain has a null `prev_event_hash`; subsequent hashes use the preceding event hash. `actor_identifier` is an opaque verified identity, and the patient UI resolves patient identity from `PatientAccount` and recipient identity/access scope from local grant data.
 
 ---
 
@@ -387,7 +398,7 @@ To satisfy both zero-knowledge storage (`C-08`) and automated Document Intellige
 
 * **Zone 1 (`Z1`) — Trusted Patient & Recipient Client (Browser / WebAssembly):** Holds the Patient Master Key (`PMK`), executes client-side PDF/image rasterization and `FR-19` black-box redaction, runs deterministic normalization and timeline rendering, performs **AES-256-GCM** encryption/decryption and **2-of-2 XOR key splitting**, and enforces `FR-13` presentation rules. For recipients (`Z1-R`), executes in-browser key reconstruction (`Server_Share` $\oplus$ `Recipient_Share`), canonical AAD verification, and read-only rendering.
 * **Zone 2 (`Z2`) — Edge Gateway & Session Boundary:** Terminates TLS 1.3, enforces MFA (`NFR-04`), validates recipient second factors (`FR-22`) with brute-force rate limiting, strips any accidental query parameters, and routes authenticated requests to `Z3` or ephemeral `Z4` workers.
-* **Zone 3 (`Z3`) — Blind Core Storage & Authoritative Grant Enforcement Service:** Stores encrypted patient vaults (`Blob` + encrypted metadata), append-only hash-chained audit logs (`NFR-13`), versioned reference tables (`NFR-17`), and `GrantRecord` entries containing `server_share` and `bundle_ciphertext`. `Z3` has **zero cryptographic capability** to decrypt patient records or share bundles, and acts as the authoritative enforcement point for `NFR-12` 5-second revocation.
+* **Zone 3 (`Z3`) — Blind Core Storage & Authoritative Grant Enforcement Service:** Stores encrypted patient vaults (`Blob` + encrypted metadata), append-only hash-chained audit logs (`NFR-13`), versioned reference tables (`NFR-17`), `GrantRecord` entries containing `server_share` and a reference to `bundle_ciphertext` stored in Z3. `Z3` has **zero cryptographic capability** to decrypt patient records or share bundles, and acts as the authoritative enforcement point for `NFR-12` 5-second revocation.
 * **Zone 4 (`Z4`) — Ephemeral Zero-Retention Extraction Pipeline:** Receives a transient, session-scoped decryption capability solely during active report upload (`IF-02`), executes Document Intelligence classification and candidate row extraction (`CMP-12`, `CMP-13`), returns structured `CandidateExtractionResult` JSON (`IF-03`) to `Z1` for client-side encryption, and immediately purges volatile memory and scratch storage upon completion (`NFR-01`, `NFR-08`).
 
 ```mermaid
@@ -446,7 +457,7 @@ flowchart TB
 | **CMP-07** | Identity & Second-Factor Verifier | `Z2` | Enforces patient MFA (`NFR-04`), idle session timeout (15 min), and recipient `grant_id` + second-factor verification (`FR-22`) with 5-attempt lockout. | `FR-22`, `NFR-02`, `NFR-04` |
 | **CMP-08** | Encrypted Record & Artifact Store | `Z3` | Persists immutable encrypted source files (`C-04`) and encrypted patient record objects without access to decryption keys (`C-08`). | `FR-01`, `NFR-01`, `NFR-03`, `C-04`, `C-08` |
 | **CMP-09** | Authoritative Grant & Lease Engine | `Z3` | Stores `GrantRecord` metadata and `Server_Share`, enforces $\le 5$-year expiry (`NFR-02`), executes authoritative reads / bounded revocable leases ($\le 5.0\text{ s}$), destroys `Server_Share` on revocation (`FR-15`), and fails closed (`NFR-15`). | `FR-14`, `FR-15`, `NFR-02`, `NFR-12`, `NFR-15` |
-| **CMP-10** | Hash-Chained Audit Log Service | `Z3` | Appends tamper-evident, hash-chained audit records for all review, grant, revocation, retraction, and access events; blocks all `UPDATE`/`DELETE` operations. | `FR-09`, `FR-16`, `FR-24`, `NFR-13` |
+| **CMP-10** | Hash-Chained Audit Log Service | `Z3` | Appends tamper-evident, hash-chained audit envelopes for all review, grant, revocation, retraction, and access events; preserves client-encrypted review details as opaque ciphertext, stores no plaintext clinical values or grant scope, and blocks all `UPDATE`/`DELETE` operations. | `FR-09`, `FR-16`, `FR-24`, `NFR-13` |
 | **CMP-11** | Versioned Reference Data Service | `Z3` | Serves signed, versioned analyte code maps, conversion tables, and comparability rules managed by `SH-05`. | `FR-04`, `FR-05`, `FR-07`, `NFR-17` |
 | **CMP-12** | Document Classifier & Layout Parser | `Z4` | Validates uploaded file format, classifies lab report type, extracts page dimensions, and generates coordinate grids for bounding-box anchoring. | `FR-01`, `FR-02`, `FR-03`, `NFR-08` |
 | **CMP-13** | Candidate Row Extractor | `Z4` | Extracts candidate result rows, asserted patient identity, and normalized `[x0, y0, x1, y1]` bounding boxes with per-field confidence scores; purges all memory after `IF-03` response. | `FR-03`, `FR-21`, `NFR-08`, `NFR-09`, `NFR-11` |
@@ -495,7 +506,7 @@ flowchart TB
 ### 7.1 Component Interactions & End-to-End Data Flows
 
 1. **Report Ingestion & Ephemeral Extraction (`IF-01` $\rightarrow$ `IF-02` $\rightarrow$ `IF-03`):** The patient selects a local report in `Z1`. `Z1` computes its SHA-256 hash (`FR-06`), uploads the file over TLS 1.3 (`IF-01`) to `Z2`, which authenticates the session and invokes an isolated `Z4` extraction worker (`IF-02`). `Z4` extracts structured candidates and bounding boxes, validates schema and confidence thresholds (`CMP-14`), returns `CandidateExtractionResult` (`IF-03`), and zeroizes worker memory/disk. `Z1` immediately encrypts both the raw source file and the candidate set under keys derived from `PMK` and persists them to `CMP-08` in `Z3`.
-2. **Deterministic Normalization & Patient Verification (`CMP-03`, `CMP-04`):** `Z1` fetches signed reference tables from `CMP-11`, maps analyte codes (`FR-04`), applies deterministic unit conversions (`FR-05`), checks identity confirmation status (`FR-21`), and presents candidates in the review queue (`FR-08`). Patient acceptance or correction (`FR-09`) writes encrypted `AcceptedObservation` records to `CMP-08` and emits an immutable audit event to `CMP-10`.
+2. **Deterministic Normalization & Patient Verification (`CMP-03`, `CMP-04`):** `Z1` fetches signed reference tables from `CMP-11`, maps analyte codes (`FR-04`), applies deterministic unit conversions (`FR-05`), checks identity confirmation status (`FR-21`), and presents candidates in the review queue (`FR-08`). Patient acceptance or correction (`FR-09`) writes encrypted `AcceptedObservation` records to `CMP-08` and emits a hash-chained audit event to `CMP-10`; any prior/new clinical values are client-encrypted in the event details.
 3. **Zero-Knowledge Share Bundle Creation (`IF-04a`):** On `Z1`, `CMP-02` filters accepted values to the granted scope, renders redacted flattened PNGs (`FR-19`, `NFR-19`), serializes `ShareBundle`, encrypts it under a fresh 256-bit `Grant_Key` via AES-256-GCM with canonical AAD, splits `Grant_Key` via 2-of-2 XOR, and registers `grant_id`, `Server_Share`, `IV`, canonical public AAD fields, and `bundle_ciphertext` with `CMP-09` (`IF-04a`).
 4. **Recipient Verification, Split-Key Retrieval & Decryption (`IF-05`):** Recipient (`Z1-R`) opens `https://app.labtrail.example/share/<grant_id>#<Recipient_Share>`, submits `grant_id` and the out-of-band second factor (`FR-22`) over `IF-05`, receives `Server_Share`, `IV`, canonical public fields, and `bundle_ciphertext` from `CMP-09`, reconstructs `Grant_Key` and canonical AAD in-browser, and decrypts `ShareBundle` only if GCM authentication succeeds (`NFR-20`).
 
@@ -867,7 +878,7 @@ sequenceDiagram
     Z4->>Z1: IF-03 CandidateExtractionResult JSON (Z4 wipes RAM)
     Z1->>Z3: Store encrypted source blob & candidates (PMK-wrapped)
     Patient->>Z1: Confirm identity (FR-21) & accept/correct candidates (FR-09)
-    Z1->>Z3: Persist encrypted AcceptedObservations + AuditEvent
+    Z1->>Z3: Persist encrypted AcceptedObservations + hash-chained AuditEvent (encrypted correction details)
 
     Note over Patient,Z1R: Phase 2: Split-Key Share Creation (Direct AES-256-GCM)
     Patient->>Z1: Configure grant scope, expiry & acknowledge R-10 disclosure
