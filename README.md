@@ -20,17 +20,23 @@ The demo walks through one end-to-end slice with synthetic data only:
 3. **Timeline**: one chart per analyte across labs, converted with a versioned unit
    table, with markers when the lab, unit, or reference range changes. Values with no
    supported conversion (e.g. HbA1c in mmol/mol) are listed, not plotted.
-4. **Share**: pick analytes, dates, and a recipient to produce a schema-validated JSON
-   share. If you confirmed a page complete on the Review page, it is shared as a
-   flattened image with every other line masked, and only after an OCR check finds no
-   hidden text still readable; otherwise the page is withheld.
+4. **Share**: pick analytes, dates, and a recipient, then **Prepare share**. Pages you
+   confirmed complete become flattened images with every other line masked (and pass
+   an OCR leak check); other pages are withheld.
+5. **Send now**: after ticking the consent box, the share is encrypted (AES-256-GCM,
+   key split in two) and registered with a local stand-in for the grant service.
+   You get a link and a separate 6-digit code. Open the link in another browser tab
+   to see the clinician's read-only view (email `clinician@example.org` plus the
+   code). **Revoke** in "Sent shares" ends access; the access log shows every open
+   and failed attempt.
 
 The sidebar's **Save or open your record** panel encrypts the whole record into a
 `.vault` file with your passphrase (Argon2id key derivation, AES-256-GCM; the file
 header is authenticated so its settings cannot be weakened) and opens it again later.
 
-Not built (designed only): a patient master key with recovery phrase, accounts and
-server storage, encryption of shares, the recipient viewer, and revocation.
+Not built (designed only): a patient master key with recovery phrase, accounts, and a
+hosted server. Share links work only where this app is reachable, and the grant
+service is the local `.labtrail_server/` folder.
 
 See [docs/implementation.md](docs/implementation.md) for diagrams of what is built,
 changes from the design report, and requirement-by-requirement coverage.

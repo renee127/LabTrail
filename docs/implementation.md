@@ -6,8 +6,9 @@ the report describes the full architecture, and this page shows which slice of i
 runs today, how the pieces fit together, and how each part is tested.
 
 The prototype runs locally (`streamlit run app.py`) on synthetic lab reports.
-It covers one end-to-end path: **upload → confirm → review → timeline → share**,
-plus saving the record as an encrypted file.
+It covers one end-to-end path: **upload → confirm → review → timeline → share →
+send**, a read-only clinician view opened from the share link, revocation, and
+saving the record as an encrypted file.
 
 ## 1. Components
 
@@ -18,12 +19,14 @@ flowchart TB
     patient([Patient])
     clinician([Clinician])
 
-    subgraph built["Built: runs on the patient's machine"]
-        app["app.py<br/>Streamlit UI"]
+    subgraph built["Built: one local Streamlit app"]
+        app["app.py<br/>patient UI + recipient view"]
         workflow["labtrail_workflow.py<br/>analyte table, unit rules,<br/>accept/correct, timeline, share"]
         extraction["labtrail_extraction.py<br/>OCR line extraction"]
         algorithms["labtrail_algorithms.py<br/>review queue, normalization,<br/>comparability, share selection"]
         redaction["labtrail_redaction.py<br/>flattened page masking<br/>+ OCR leak check"]
+        sharing["labtrail_sharing.py<br/>AES-256-GCM bundle, XOR key split,<br/>code check, revocation"]
+        server[("ShareServer<br/>local folder stand-in:<br/>ciphertext + server key half<br/>+ hash-chained access log")]
         vault["labtrail_vault.py<br/>Argon2id + AES-256-GCM<br/>record file"]
         models["models.py<br/>domain classes"]
         schemas[("JSON schemas<br/>extraction result v1<br/>share payload v1")]
@@ -31,17 +34,18 @@ flowchart TB
     end
 
     subgraph planned["Designed, not built"]
-        gateway["Auth gateway<br/>accounts, MFA"]
-        store["Blind storage<br/>& grant service"]
-        viewer["Recipient viewer"]
-        revoke["5-second revocation"]
+        gateway["Accounts, login MFA,<br/>hosted server zones"]
+        recovery["Master key with<br/>recovery phrase"]
     end
 
     patient --> app
+    clinician -- "link + code" --> app
     app --> workflow
     app --> extraction
     app --> redaction
+    app --> sharing
     app --> vault
+    sharing --> server
     workflow --> algorithms
     workflow --> schemas
     extraction --> tesseract
@@ -50,16 +54,14 @@ flowchart TB
     redaction --> tesseract
     algorithms --> models
     workflow --> models
+    sharing --> models
     vault --> models
 
-    app -. "share JSON<br/>(downloaded today)" .-> store
-    store -.-> viewer
-    viewer -.-> clinician
-    revoke -.-> store
-    gateway -.-> store
+    gateway -.-> server
+    recovery -.-> vault
 
     classDef plannedStyle stroke-dasharray: 5 5,fill:none
-    class gateway,store,viewer,revoke plannedStyle
+    class gateway,recovery plannedStyle
 ```
 
 **Figure 1. Implemented components.** The UI only orchestrates. Every rule a
@@ -203,9 +205,47 @@ sequenceDiagram
     V-->>P: .vault file
 ```
 
-**Figure 3. One pass through the prototype.** Nothing enters the record without
+**Figure 3a. One pass through the prototype.** Nothing enters the record without
 the patient's explicit accept or correct decision inside the loop, and a source page is shared only if the
 patient confirmed it complete and the masked image passes the OCR leak check.
+
+### Sending and opening a share
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor P as Patient
+    participant UI as app.py (patient)
+    participant S as labtrail_sharing
+    participant G as ShareServer
+    actor C as Clinician
+    participant RV as app.py (recipient view)
+
+    P->>UI: Send now (after consent)
+    UI->>S: send_share()
+    Note over S: fresh Grant_Key and IV<br/>AES-256-GCM, AAD = grant_id + schema_version<br/>Server_Share random, Recipient_Share = Grant_Key XOR Server_Share
+    S->>G: register(ciphertext, IV, Server_Share, code verifier, email hash)
+    S-->>UI: Recipient_Share, 6-digit code
+    UI-->>P: link (holds Recipient_Share) and code
+    P-->>C: link by email, code by phone or text
+    C->>RV: open link, enter email and code
+    RV->>G: retrieve(grant_id, email, code)
+    alt active and credentials correct
+        G-->>RV: Server_Share, IV, ciphertext (logs ACCESS_GRANTED)
+        RV->>RV: Grant_Key = Server_Share XOR Recipient_Share, decrypt
+        RV-->>C: read-only values, flags, redacted pages
+    else wrong, revoked, expired, or locked
+        G-->>RV: denied, logs ACCESS_DENIED (5 failures lock and destroy Server_Share)
+    end
+    P->>UI: Revoke
+    UI->>G: revoke() destroys Server_Share (logs GRANT_REVOKED)
+    RV->>G: next refresh checks status
+    G-->>RV: REVOKED, view cleared
+```
+
+**Figure 3b. Sending, opening, and revoking a share.** The grant service stores
+ciphertext and one key half, so it cannot read the share; the link alone cannot
+open it either, because the other half is released only for the right email and code.
 
 ## 4. States
 
@@ -226,10 +266,17 @@ stateDiagram-v2
         [*] --> INCOMPLETE : OCR cannot prove all rows found
         INCOMPLETE --> COMPLETE : every line decided and patient confirms
     }
+    state "Sent share (grant service)" as grant {
+        [*] --> ACTIVE : Send now
+        ACTIVE --> REVOKED : patient revokes
+        ACTIVE --> EXPIRED : expiry date passes
+        ACTIVE --> LOCKED : 5 wrong codes
+    }
 ```
 
 **Figure 4. State changes the prototype enforces.** Only a patient action moves
-a line out of `CANDIDATE` or a page to `COMPLETE`.
+a line out of `CANDIDATE` or a page to `COMPLETE`. Every exit from `ACTIVE`
+destroys the server's key half, so the share can never be opened again.
 
 ## 5. Changes from the design report
 
@@ -240,6 +287,9 @@ a line out of `CANDIDATE` or a page to `COMPLETE`.
 | Extraction | Model-based extraction service | Local Tesseract OCR with preprocessing | Runs offline on synthetic data; measured in the benchmark |
 | Key management | Random master key wrapped by login and recovery keys | Record file encrypted directly with a passphrase-derived key | Shows patient-held keys without accounts or recovery |
 | Platform | Browser client with server zones | Single local Streamlit app | Keeps the slice end-to-end within the project timeline |
+| Grant service | Hosted blind store with distributed 5-second revocation leases | Local folder, one JSON file per grant; revocation is immediate | Same key-split and fail-closed behavior without hosting |
+| Link key half | In the URL fragment (`#`), never sent to any server | In a query parameter (`?k=`) | Streamlit cannot read fragments; the grant service code still never receives it |
+| Recipient check | Grant credential plus out-of-band second factor | Link plus recipient email and a 6-digit code; 5 failures lock the share | Matches FR-22 with a code the patient can read aloud |
 
 ## 6. Requirement coverage
 
@@ -262,16 +312,16 @@ Status: **Built** works end to end in the demo; **Partial** works with the state
 | FR-12 | Chronological analyte view | Built | Timeline page, `analyte_timeline` | workflow, smoke |
 | FR-13 | No interpretation | Built: no summaries are computed; a scanner fails the build if any page or the share JSON uses interpretive words | `find_interpretive_language` | workflow, smoke |
 | FR-14 | Scoped, expiring grant | Built | `build_share`, `ClientShareGrant` | workflow, schema |
-| FR-15 | Revocation within 5 s | Not built | — | — |
-| FR-16 | Access log | Not built | — | — |
-| FR-17 | Recipient read-only view | Not built: share is a downloadable JSON file | — | — |
+| FR-15 | Revocation within 5 s | Built locally: Revoke destroys the server key half at once; an open recipient view loses access on refresh | `ShareServer.revoke` | sharing, smoke |
+| FR-16 | Access log | Built: every registration, open, denial, lock, expiry, and revocation per share, hash-chained and shown to the patient | `ShareServer.events`, `verify_event_chain` | sharing |
+| FR-17 | Recipient read-only view | Partial: values, chart, comparability, provenance, notes, redacted pages; no printable summary | `app.page_recipient` | smoke |
 | FR-18 | Full export | Partial: share JSON (schema v1) and encrypted record file; no JSON/CSV bundle with source files | `build_share`, `labtrail_vault` | schema, vault |
 | FR-19 | Flattened, masked source pages | Built, after patient-confirmed coverage | `redact_source_page`, `confirm_page_coverage` | redaction, workflow, smoke |
 | FR-20 | Withhold unreliable pages | Built | `redact_source_page` | redaction, workflow |
 | FR-21 | Confirm identity per lab rendering | Partial: confirmed once per lab and printed name; `ConfirmedIdentity` not persisted separately | Upload page | smoke |
-| FR-22 | Recipient second factor | Not built | — | — |
+| FR-22 | Recipient second factor | Built: link plus email and 6-digit code; lock after 5 failures | `open_share`, `ShareServer.retrieve` | sharing, smoke |
 | FR-23 | Patient-held keys and recovery | Partial: passphrase-encrypted record file; no recovery phrase | `labtrail_vault` | vault |
-| FR-24 | Retraction | Partial: retracted values leave the timeline and new shares; no active bundles to refresh | Timeline page | workflow |
+| FR-24 | Retraction | Partial: retracted values leave the timeline and new shares; already-sent shares are not refreshed (revoke and resend) | Timeline page | workflow |
 
 Test files: `tests/test_labtrail_algorithms.py` (algorithms), `test_labtrail_workflow.py`
 (workflow), `test_labtrail_extraction.py` (extraction), `test_labtrail_redaction.py`
@@ -281,7 +331,7 @@ accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
 
 ## 7. Validation summary
 
-- **127 automated tests** run on every push (GitHub Actions), including a test that
+- **138 automated tests** run on every push (GitHub Actions), including a test that
   drives the real app through upload, review, timeline, redacted share, and
   encrypted save.
 - **Extraction accuracy** (row exact: value, unit, and range all correct): 100% on
@@ -291,6 +341,11 @@ accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
   is readable and no other row, name, or lab is.
 - **Encryption** is verified by tamper tests: a wrong passphrase, one flipped
   ciphertext bit, or an edited header all fail to open.
+- **Sharing** is verified end to end in two app sessions: the clinician is refused
+  with a wrong code, opens the share with the right one, and loses access after
+  the patient revokes. Tests also show the stored grant contains no readable
+  content, that changing the link, ciphertext, nonce, or grant id fails closed,
+  and that five wrong codes lock the share.
 
 ## 8. Known limitations
 
@@ -299,4 +354,7 @@ accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
 - Text that OCR misses entirely is not in the line list, so it is not masked;
   the patient's page confirmation is the safeguard.
 - The benchmark uses one font and simulated scans; real reports vary more.
-- No accounts, server, recipient view, revocation, or recovery phrase.
+- No accounts, hosted server, or recovery phrase. Share links work only where
+  this app is reachable (on one machine, or a network you expose it to).
+- A share already sent is not updated when the patient retracts a value; the
+  patient must revoke and send a new one.

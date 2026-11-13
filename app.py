@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import altair as alt
@@ -19,6 +20,7 @@ from PIL import Image
 from labtrail_algorithms import find_duplicate_observation_groups, partition_review_queue
 from labtrail_extraction import extract_document_ocr_line_candidates
 from labtrail_redaction import rasterize_pdf_page, redact_source_page
+from labtrail_sharing import AccessDenied, ShareDecryptionError, ShareServer, b64url, open_share, send_share, unb64url
 from labtrail_vault import MIN_PASSPHRASE_LENGTH, VaultError, decrypt_record, encrypt_record
 from labtrail_workflow import (
     ANALYTE_LABELS,
@@ -41,10 +43,6 @@ SAMPLES_DIR = Path(__file__).with_name("samples")
 RASTER_DPI = 150
 MIME_BY_SUFFIX = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 NOTE_CATEGORIES = ["MEDICATION_CHANGE", "DIET", "ILLNESS", "ACTIVITY", "FREE_TEXT"]
-REVOCATION_DISCLOSURE = (
-    "Revoking a share stops future access, but it cannot erase anything the recipient "
-    "has already viewed, saved, printed, or photographed."
-)
 
 st.set_page_config(page_title="LabTrail demo", page_icon="🧪", layout="wide")
 
@@ -59,6 +57,7 @@ def _state():
     ss.setdefault("notes", [])          # ContextNote
     ss.setdefault("activity", [])       # (timestamp, message)
     ss.setdefault("confirmed_identities", set())  # (lab, exact printed name)
+    ss.setdefault("sent_shares", [])    # dicts: grant id, recipient, link, code
     return ss
 
 
@@ -441,9 +440,153 @@ def page_timeline() -> None:
 
 # ---------------------------------------------------------------- share
 
+_WITHHELD_REASONS = {
+    "ROW_COVERAGE_UNVERIFIED": "withheld: page not yet confirmed complete on the Review page",
+    "NO_GRANTED_OBSERVATION": "withheld: nothing on this page is in scope",
+    "OCR_LEAK_DETECTED": "withheld: hidden text was still readable after masking",
+    "OCR_VERIFICATION_FAILED": "withheld: the masked page could not be verified",
+    "REGION_UNRELIABLE": "withheld: a row's location on the page is uncertain",
+    "REGION_UNAVAILABLE": "withheld: a row's location on the page is unknown",
+    "REDACTION_LABEL_DOES_NOT_FIT": "withheld: a masked row is too small to label",
+}
+SEND_DISCLOSURE = (
+    "**Before you send:** only the analytes and dates you selected are included, and source "
+    "pages are flattened images with every other result masked. You can revoke this share at "
+    "any time; LabTrail then destroys its half of the decryption key and the link stops "
+    "working. Revoking cannot undo what the recipient already opened: they may have viewed, "
+    "printed, photographed, or saved a copy."
+)
+_STATUS_LABELS = {
+    "ACTIVE": "🟢 Active",
+    "REVOKED": "⛔ Revoked",
+    "EXPIRED": "⌛ Expired",
+    "LOCKED": "🔒 Locked after 5 wrong codes",
+}
+
+
+def _server() -> ShareServer:
+    return ShareServer()
+
+
+def _base_url() -> str:
+    url = getattr(st.context, "url", None) or "http://localhost:8501"
+    return url.split("?", 1)[0].rstrip("/")
+
+
+def _prepare(analytes, range_start, range_end, recipient, recipient_email, valid_days) -> None:
+    ss = _state()
+    now = _now()
+    grant, selection, payload = build_share(
+        observations=ss.observations, notes=ss.notes, analytes=analytes,
+        range_start=range_start, range_end=range_end, recipient_name=recipient,
+        recipient_email=recipient_email, now=now, valid_for=timedelta(days=int(valid_days)),
+    )
+    pages, withheld = [], []
+    for plan in selection.source_pages:
+        report = ss.reports[plan.report_id]
+        outcome = redact_source_page(
+            page_raster=report["pages"][plan.page_number], report_id=plan.report_id,
+            page_number=plan.page_number, extraction_result=report["result"],
+            observations=ss.observations, grant=grant, as_of=now,
+            region_confidence_threshold=0.8, mask_padding_pixels=4,
+        )
+        label = f"{report['filename']} p.{plan.page_number}"
+        if outcome.redacted_png:
+            pages.append({"label": label, "png": outcome.redacted_png})
+        else:
+            reason = _WITHHELD_REASONS.get(outcome.withheld_reason, f"withheld: {outcome.withheld_reason}")
+            withheld.append({"label": label, "reason": reason})
+    ss.prepared_share = {
+        "grant": grant, "email": recipient_email, "payload": payload,
+        "pages": pages, "withheld": withheld,
+        "results": len(selection.observations), "notes": len(selection.context_notes),
+    }
+    ss.last_sent = None
+    _log(f"Prepared share for {recipient}: {len(selection.observations)} results")
+
+
+def _send_prepared() -> None:
+    ss = _state()
+    prepared = ss.prepared_share
+    grant = prepared["grant"]
+    sent = send_share(
+        grant=grant, recipient_email=prepared["email"], share_payload=prepared["payload"],
+        redacted_pages=prepared["pages"], withheld_pages=prepared["withheld"],
+        server=_server(), now=_now(),
+    )
+    link = f"{_base_url()}/?share={sent.grant_id}&k={b64url(sent.recipient_share)}"
+    record = {
+        "grant_id": str(sent.grant_id),
+        "recipient": grant.recipient_name,
+        "email": prepared["email"],
+        "analytes": [ANALYTE_LABELS[a] for a in grant.granted_analytes],
+        "range": f"{grant.range_start} to {grant.range_end}",
+        "expires": f"{grant.expires_at:%Y-%m-%d}",
+        "sent_at": f"{_now():%Y-%m-%d %H:%M}",
+        "link": link,
+        "code": sent.access_code,
+    }
+    ss.sent_shares.append(record)
+    ss.last_sent = record
+    ss.prepared_share = None
+    _log(f"Sent encrypted share to {grant.recipient_name}")
+
+
+def _show_sent(record: dict) -> None:
+    st.success(f"Sent to {record['recipient']}. Give them both of these, through different channels:")
+    st.write("**1. The link**")
+    st.code(record["link"], language=None)
+    st.write("**2. The access code** (tell them by phone or text message, not in the same email)")
+    st.code(record["code"], language=None)
+    subject = quote("Lab results shared with you through LabTrail")
+    body = quote(
+        f"Hello {record['recipient']},\n\nI have shared some of my lab results with you. "
+        f"Open this link:\n\n{record['link']}\n\nI will send the access code separately. "
+        f"The link expires on {record['expires']}.\n"
+    )
+    st.link_button("✉️ Email the link (opens your email app)", f"mailto:{record['email']}?subject={subject}&body={body}")
+
+
+def _sent_shares_panel() -> None:
+    ss = _state()
+    if not ss.sent_shares:
+        return
+    st.subheader("Sent shares")
+    server, now = _server(), _now()
+    for record in reversed(ss.sent_shares):
+        grant_id = UUID(record["grant_id"])
+        try:
+            status = server.status(grant_id, now)
+            events = server.events(grant_id)
+        except AccessDenied:
+            status, events = "NOT_FOUND", []
+        with st.container(border=True):
+            top, button = st.columns([5, 1])
+            top.write(
+                f"**{record['recipient']}** · {', '.join(record['analytes'])} · {record['range']} · "
+                f"sent {record['sent_at']} · expires {record['expires']} · "
+                f"{_STATUS_LABELS.get(status, status)}"
+            )
+            if status == "ACTIVE" and button.button("Revoke", key=f"revoke-{grant_id}"):
+                server.revoke(grant_id, _now())
+                _log(f"Revoked share for {record['recipient']}")
+                st.rerun()
+            opened = sum(e["event_type"] == "ACCESS_GRANTED" for e in events)
+            denied = sum(e["event_type"] == "ACCESS_DENIED" for e in events)
+            with st.expander(f"Access log · opened {opened}× · denied {denied}×"):
+                for e in events:
+                    st.caption(f"{e['occurred_at'][:19].replace('T', ' ')} · {e['event_type'].replace('_', ' ').lower()}")
+                if events:
+                    intact = ShareServer.verify_event_chain(events)
+                    st.caption("Log integrity: " + ("hash chain verified ✓" if intact else "⚠ chain broken"))
+                if status == "ACTIVE":
+                    st.caption("Link and code:")
+                    st.code(f"{record['link']}\ncode: {record['code']}", language=None)
+
+
 def page_share() -> None:
     ss = _state()
-    st.header("4 · Prepare a share")
+    st.header("4 · Share with a clinician")
     st.caption(
         "Choose exactly which analytes and dates a clinician may see. Only accepted results "
         "and in-scope notes are included."
@@ -451,6 +594,7 @@ def page_share() -> None:
     active = [o for o in ss.observations if o.lifecycle_status == "ACCEPTED"]
     if not active:
         st.info("Accept some results first.")
+        _sent_shares_panel()
         return
     dates = [o.collection_datetime for o in active]
     available = [code for code in ANALYTE_LABELS if any(o.analyte_code == code for o in active)]
@@ -464,69 +608,162 @@ def page_share() -> None:
         recipient = name.text_input("Recipient name", value="Dr. Synthetic Clinician")
         recipient_email = email.text_input("Recipient email", value="clinician@example.org")
         valid_days = days.number_input("Valid for (days)", min_value=1, max_value=365, value=14)
-        st.info(REVOCATION_DISCLOSURE)
         submitted = st.form_submit_button("Prepare share", type="primary")
-    if not submitted:
-        return
+    if submitted:
+        try:
+            _prepare(analytes, range_start, range_end, recipient, recipient_email, valid_days)
+        except ValueError as error:
+            st.error(str(error))
+
+    prepared = ss.get("prepared_share")
+    if prepared:
+        grant = prepared["grant"]
+        st.success(
+            f"{prepared['results']} result(s) and {prepared['notes']} note(s) ready for "
+            f"{grant.recipient_name}, expiring {grant.expires_at:%Y-%m-%d}."
+        )
+        st.write("**Source pages**")
+        st.caption(
+            "Source pages are shared only as flattened images with every ungranted row masked. "
+            "A page is withheld unless you confirmed it complete and the masked image passes an "
+            "OCR check that no hidden text is still readable."
+        )
+        for page in prepared["pages"]:
+            st.write(f"- {page['label']}: redacted image")
+            st.image(page["png"], width=600)
+        for page in prepared["withheld"]:
+            st.write(f"- {page['label']}: {page['reason']}")
+        with st.expander("Preview share JSON"):
+            st.code(prepared["payload"].decode("utf-8")[:4000], language="json")
+        st.download_button(
+            "Download structured share (JSON, schema v1)", prepared["payload"],
+            file_name=f"labtrail-share-{grant.grant_id}.json", mime="application/json",
+        )
+
+        st.subheader("Send to the clinician")
+        st.info(SEND_DISCLOSURE)
+        agreed = st.checkbox("I understand what sharing and revoking can and cannot do", key="send-consent")
+        if st.button("Send now", type="primary", disabled=not agreed):
+            _send_prepared()
+            st.rerun()
+
+    if ss.get("last_sent"):
+        _show_sent(ss.last_sent)
+    _sent_shares_panel()
+    st.caption(
+        "Demo limits: the grant service is a local folder, the link carries its key half in a "
+        "query parameter instead of the URL fragment, and nothing is emailed automatically."
+    )
+
+
+# ---------------------------------------------------------------- recipient view
+
+def page_recipient(grant_param: str, key_param: str) -> None:
+    """Read-only view a clinician sees after opening a share link."""
+    ss = _state()
+    st.title("🧪 LabTrail · Shared lab results")
+    st.caption("Read-only. Shared by the patient; only the results they chose are included.")
+    st.warning(SIDEBAR_NOTICE)
     try:
-        now = _now()
-        grant, selection, payload = build_share(
-            observations=ss.observations, notes=ss.notes, analytes=analytes,
-            range_start=range_start, range_end=range_end, recipient_name=recipient,
-            recipient_email=recipient_email, now=now, valid_for=timedelta(days=int(valid_days)),
-        )
-    except ValueError as error:
-        st.error(str(error))
+        grant_id = UUID(grant_param)
+        recipient_share = unb64url(key_param)
+        if len(recipient_share) != 32:
+            raise ValueError
+    except (ValueError, TypeError):
+        st.error("This link is incomplete or damaged. Ask the patient to send it again.")
         return
-    _log(f"Prepared share for {recipient}: {len(selection.observations)} results")
 
-    st.success(
-        f"{len(selection.observations)} result(s) and {len(selection.context_notes)} note(s) selected "
-        f"for {recipient}, expiring {grant.expires_at:%Y-%m-%d}."
-    )
-    st.download_button(
-        "Download structured share (JSON, schema v1)", payload,
-        file_name=f"labtrail-share-{grant.grant_id}.json", mime="application/json",
-    )
+    server = _server()
+    bundle = ss.get("recipient_bundles", {}).get(grant_id)
+    if bundle is not None:
+        try:
+            status = server.status(grant_id, _now())
+        except AccessDenied:
+            status = "NOT_FOUND"
+        if status != "ACTIVE":
+            ss.recipient_bundles.pop(grant_id, None)
+            bundle = None
+            st.error("The patient's access for this link has ended (revoked or expired).")
+            return
 
-    st.write("**Source pages**")
-    st.caption(
-        "Source pages are shared only as flattened images with every ungranted row masked. "
-        "A page is withheld unless you confirmed it complete and the masked image passes an "
-        "OCR check that no hidden text is still readable."
-    )
-    reasons = {
-        "ROW_COVERAGE_UNVERIFIED": "withheld: page not yet confirmed complete on the Review page",
-        "NO_GRANTED_OBSERVATION": "withheld: nothing on this page is in scope",
-        "OCR_LEAK_DETECTED": "withheld: hidden text was still readable after masking",
-        "OCR_VERIFICATION_FAILED": "withheld: the masked page could not be verified",
-        "REGION_UNRELIABLE": "withheld: a row's location on the page is uncertain",
-        "REDACTION_LABEL_DOES_NOT_FIT": "withheld: a masked row is too small to label",
-    }
-    for plan in selection.source_pages:
-        report = ss.reports[plan.report_id]
-        outcome = redact_source_page(
-            page_raster=report["pages"][plan.page_number], report_id=plan.report_id,
-            page_number=plan.page_number, extraction_result=report["result"],
-            observations=ss.observations, grant=grant, as_of=now,
-            region_confidence_threshold=0.8, mask_padding_pixels=4,
-        )
-        label = reasons.get(outcome.withheld_reason or "", outcome.withheld_reason or "redacted image")
-        st.write(f"- {report['filename']} p.{plan.page_number}: {label}")
-        if outcome.redacted_png:
-            st.image(outcome.redacted_png, width=600)
+    if bundle is None:
+        with st.form("open-share"):
+            email = st.text_input("Your email address (the one the patient shared with)")
+            code = st.text_input("Access code from the patient", max_chars=6)
+            submitted = st.form_submit_button("Open", type="primary")
+        if not submitted:
+            return
+        messages = {
+            "WRONG_CREDENTIALS": "That email address or code is not correct.",
+            "LOCKED": "This link is locked after too many wrong attempts. Ask the patient for a new share.",
+            "REVOKED": "The patient has revoked this share.",
+            "EXPIRED": "This share has expired.",
+            "NOT_FOUND": "This share does not exist.",
+        }
+        try:
+            bundle = open_share(
+                grant_id=grant_id, recipient_share=recipient_share, recipient_email=email,
+                access_code=code, server=server, now=_now(),
+            )
+        except AccessDenied as denied:
+            st.error(messages.get(denied.reason, "Access denied."))
+            return
+        except ShareDecryptionError:
+            st.error("This share could not be verified, so nothing was shown. The link may be damaged.")
+            return
+        ss.setdefault("recipient_bundles", {})[grant_id] = bundle
+        st.rerun()
 
-    with st.expander("Preview share JSON"):
-        st.code(payload.decode("utf-8")[:4000], language="json")
-    st.caption(
-        "Demo limits: the share is not encrypted, there is no recipient viewer, and revocation "
-        "is not implemented. These are designed in the report but not built."
+    payload = bundle["payload"]
+    st.write(
+        f"For **{bundle['recipient_name']}** · results from {payload['range_start']} to "
+        f"{payload['range_end']} · access until {bundle['expires_at'][:10]}"
     )
+    by_analyte: dict[str, list[dict]] = {}
+    for o in payload["observations"]:
+        by_analyte.setdefault(o["analyte_code"], []).append(o)
+    for code, rows in by_analyte.items():
+        st.subheader(ANALYTE_LABELS.get(code, code))
+        plotted = [r for r in rows if r["canonical_value"] is not None]
+        if plotted:
+            df = pd.DataFrame([
+                {"date": pd.Timestamp(r["collection_datetime"]), "value": float(r["canonical_value"]),
+                 "lab": r["source_lab"]} for r in plotted
+            ])
+            chart = alt.Chart(df).mark_line(point=alt.OverlayMarkDef(size=90, filled=True), color="#888").encode(
+                x=alt.X("date:T", title="Collection date"),
+                y=alt.Y("value:Q", title=f"{ANALYTE_LABELS.get(code, code)} ({plotted[0]['canonical_unit']})",
+                        scale=alt.Scale(zero=False)),
+                tooltip=["date:T", "value:Q", "lab:N"],
+            )
+            st.altair_chart(chart.properties(height=260), width="stretch")
+        st.dataframe(pd.DataFrame([
+            {
+                "Collected": r["collection_datetime"][:10],
+                "Lab": r["source_lab"],
+                "As reported": f"{r['original_value']} {r['original_unit']}",
+                "Converted": f"{r['canonical_value']} {r['canonical_unit']}" if r["canonical_value"] else "not converted",
+                "Reference range": r["reference_interval"] or "—",
+                "Compared with previous": ", ".join(COMPARABILITY_LABELS[c] for c in (r["comparability_changes"] or [])) or "—",
+                "Entered by": "patient-corrected" if r["provenance_flag"] == "CORRECTED_BY_PATIENT" else "as printed",
+            }
+            for r in rows
+        ]), hide_index=True, width="stretch")
+    if payload["context_notes"]:
+        st.subheader("Patient notes")
+        for n in payload["context_notes"]:
+            st.write(f"- {n['note_date']} · {n['category'].replace('_', ' ').title()}: {n['body']}")
+    st.subheader("Source pages")
+    for page in bundle["pages"]:
+        st.image(page["png"], caption=page["label"], width=650)
+    for page in bundle["withheld_pages"]:
+        st.caption(f"{page['label']}: {page['reason']}")
 
 
 # ---------------------------------------------------------------- vault
 
-_VAULT_KEYS = ("reports", "observations", "notes", "activity", "confirmed_identities")
+_VAULT_KEYS = ("reports", "observations", "notes", "activity", "confirmed_identities", "sent_shares")
+_VAULT_DEFAULTS = {"sent_shares": list}
 
 
 def vault_panel() -> None:
@@ -561,7 +798,7 @@ def vault_panel() -> None:
                 st.error(str(error))
             else:
                 for key in _VAULT_KEYS:
-                    ss[key] = record[key]
+                    ss[key] = record[key] if key in record else _VAULT_DEFAULTS[key]()
                 ss.candidates = {
                     c.candidate_id: c
                     for r in ss.reports.values()
@@ -577,6 +814,10 @@ def vault_panel() -> None:
 
 def main() -> None:
     ss = _state()
+    params = st.query_params
+    if "share" in params:
+        page_recipient(params.get("share", ""), params.get("k", ""))
+        return
     st.sidebar.title("🧪 LabTrail")
     st.sidebar.caption("Patient-controlled lab history · demo")
     st.sidebar.warning(SIDEBAR_NOTICE)

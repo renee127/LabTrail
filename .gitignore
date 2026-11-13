@@ -155,3 +155,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Local stand-in for the LabTrail grant service (demo shares)
+.labtrail_server/
