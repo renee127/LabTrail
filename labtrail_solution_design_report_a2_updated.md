@@ -243,13 +243,15 @@ classDiagram
         +String sha256_hash
         +String mime_type
         +Integer page_count
-        +String source_lab
-        +Date collection_date
-        +Date report_date
-        +String ordering_clinician
-        +String asserted_patient_name
+        +Optional~String~ source_lab
+        +Optional~DateOrDateTime~ collection_datetime
+        +Optional~DateOrDateTime~ report_datetime
+        +Optional~String~ ordering_clinician
+        +Optional~String~ report_type
+        +Optional~String~ asserted_patient_name
         +Blob encrypted_file_blob
         +Timestamp uploaded_at
+        +Optional~UUID~ confirmed_identity_id
     }
 
     class CandidateExtraction {
@@ -343,6 +345,7 @@ classDiagram
 
     PatientAccount "1" --> "0..*" ConfirmedIdentity : confirms
     PatientAccount "1" --> "0..*" SourceReport : owns
+    ConfirmedIdentity "0..1" <-- "0..*" SourceReport : matched rendering
     PatientAccount "1" --> "0..*" ContextNote : records
     PatientAccount "1" --> "0..*" ClientShareGrant : creates on Z1
     ClientShareGrant "1" --> "0..1" GrantRecord : registers metadata in Z3
@@ -357,6 +360,8 @@ classDiagram
 ```
 
 **Figure 4 — Core Domain Model.** Patient-owned classes (`PatientAccount`, `ConfirmedIdentity`, `SourceReport`, `CandidateExtraction`, `AcceptedObservation`, `ContextNote`, and `ClientShareGrant`) are managed in `Z1`; sensitive fields are encrypted under the Patient Master Key hierarchy before any persistence in `Z3`. `ClientShareGrant` holds the patient's recipient and scope choices on `Z1`; selected observations and relevant context are copied into an immutable encrypted bundle. The corresponding `GrantRecord` in `Z3` contains only operational authorization metadata, cryptographic material, expiry/state, and a ciphertext pointer—not the recipient's display name, analyte scope, or date range. Audit metadata must not contain clinical values or share scope.
+
+`SourceReport` metadata may be incomplete at upload and is completed by the patient before timeline use. Its uploaded artifact and hash remain immutable. Collection and report values preserve date-only or date-time precision, including a timezone offset only when the source provides one; no time or offset is fabricated. A report links to at most one patient-confirmed lab identity, and one confirmed rendering may match multiple reports.
 
 ---
 
@@ -528,8 +533,24 @@ flowchart TB
       "additionalProperties": false,
       "properties": {
         "source_laboratory": { "type": ["string", "null"] },
-        "collection_datetime": { "type": ["string", "null"] },
-        "report_datetime": { "type": ["string", "null"] },
+        "collection_datetime": {
+          "description": "Date-only, offset date-time, or source-local date-time without an offset; do not invent missing time or timezone information.",
+          "anyOf": [
+            { "type": "string", "format": "date" },
+            { "type": "string", "format": "date-time" },
+            { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?$" },
+            { "type": "null" }
+          ]
+        },
+        "report_datetime": {
+          "description": "Date-only, offset date-time, or source-local date-time without an offset; do not invent missing time or timezone information.",
+          "anyOf": [
+            { "type": "string", "format": "date" },
+            { "type": "string", "format": "date-time" },
+            { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?$" },
+            { "type": "null" }
+          ]
+        },
         "ordering_clinician": { "type": ["string", "null"] },
         "report_type": { "type": ["string", "null"] },
         "asserted_patient_identity": { "type": ["string", "null"] },

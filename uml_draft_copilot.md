@@ -43,13 +43,15 @@ classDiagram
         +String sha256_hash
         +String mime_type
         +Integer page_count
-        +String source_lab
-        +Date collection_date
-        +Date report_date
-        +String ordering_clinician
-        +String asserted_patient_name
+        +Optional~String~ source_lab
+        +Optional~DateOrDateTime~ collection_datetime
+        +Optional~DateOrDateTime~ report_datetime
+        +Optional~String~ ordering_clinician
+        +Optional~String~ report_type
+        +Optional~String~ asserted_patient_name
         +Blob encrypted_file_blob
         +Timestamp uploaded_at
+        +Optional~UUID~ confirmed_identity_id
     }
 
     class CandidateExtraction {
@@ -143,6 +145,7 @@ classDiagram
 
     PatientAccount "1" --> "0..*" ConfirmedIdentity : confirms
     PatientAccount "1" --> "0..*" SourceReport : owns
+    ConfirmedIdentity "0..1" <-- "0..*" SourceReport : matched rendering
     PatientAccount "1" --> "0..*" ContextNote : records
     PatientAccount "1" --> "0..*" ClientShareGrant : creates on device
     ClientShareGrant "1" --> "0..1" GrantRecord : registers metadata
@@ -160,6 +163,7 @@ classDiagram
 
 - The first four noun candidates map to `PatientAccount`, `SourceReport`, the `CandidateExtraction`/`AcceptedObservation` pair, and the `ClientShareGrant`/`GrantRecord` pair.
 - `PatientAccount` stores only the passphrase KDF salt and wrapped PMK ciphertext/nonces, never plaintext keys or passphrases. Recovery ciphertext and its nonce are both absent when recovery is disabled and both present when it is enabled.
+- `SourceReport` keeps its uploaded artifact and content hash immutable while allowing report metadata to be incomplete. Optional collection/report values preserve date-only or date-time precision, including a timezone offset only when the source provides one; confirmed reports link to the patient-scoped `ConfirmedIdentity` for that laboratory rendering.
 - Candidate extraction preserves the reported value, unit, and source region. An accepted observation records patient-reviewed and normalized data; an unconvertible value retains its original representation.
 - `ClientShareGrant` is patient-side and contains recipient and scope choices. It copies selected observations and relevant context into an immutable encrypted bundle. Corrections or new results require a new grant; the bundle is not a live link.
 - `GrantRecord` is server-side and contains only authorization, expiry, and ciphertext/key-share metadata. It must not contain recipient display names, analyte scope, date range, or clinical values in plaintext.

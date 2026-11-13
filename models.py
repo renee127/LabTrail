@@ -42,19 +42,21 @@ class ConfirmedIdentity:
 
 @dataclass
 class SourceReport:
-    """Represents an uploaded laboratory report and its source metadata."""
+    """Represents an immutable uploaded report and completable metadata."""
 
     report_id: UUID
     sha256_hash: str
     mime_type: str
     page_count: int
-    source_lab: str
-    collection_date: date
-    report_date: date
-    ordering_clinician: str
-    asserted_patient_name: str
     encrypted_file_blob: bytes
     uploaded_at: datetime
+    source_lab: str | None = None
+    collection_datetime: date | datetime | None = None
+    report_datetime: date | datetime | None = None
+    ordering_clinician: str | None = None
+    report_type: str | None = None
+    asserted_patient_name: str | None = None
+    confirmed_identity_id: UUID | None = None
 
 
 @dataclass
