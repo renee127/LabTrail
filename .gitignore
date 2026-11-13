@@ -145,5 +145,10 @@ vite.config.ts.timestamp-*
 # Astro generated types
 .astro/
 
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Turbo Repo
 .turbo
