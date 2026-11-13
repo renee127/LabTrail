@@ -10,6 +10,7 @@ from typing import Literal
 from uuid import UUID
 
 import pytesseract
+import pypdfium2 as pdfium
 from pytesseract import Output
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
@@ -17,6 +18,7 @@ from labtrail_algorithms import prepare_share_content_selection
 from models import AcceptedObservation, CandidateExtraction, ClientShareGrant
 
 
+_MAX_RASTER_PIXELS = 40_000_000
 PageDisposition = Literal["REDACTED_PNG", "WITHHELD"]
 WithheldReason = Literal[
     "NO_GRANTED_OBSERVATION",
@@ -190,6 +192,61 @@ def _verify_redacted_page_ocr(
     if recognized_labels != {candidate_id for candidate_id, _ in mask_regions}:
         return "OCR_VERIFICATION_FAILED"
     return None
+
+
+def rasterize_pdf_page(
+    pdf_bytes: bytes,
+    page_number: int,
+    *,
+    dpi: int = 150,
+) -> bytes:
+    """Render one PDF page to a metadata-free RGB PNG for the redaction prototype."""
+    if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
+        raise ValueError("PDF source must be non-empty bytes.")
+    if (
+        isinstance(page_number, bool)
+        or not isinstance(page_number, int)
+        or page_number < 1
+    ):
+        raise ValueError("Page number must be a positive integer.")
+    if isinstance(dpi, bool) or not isinstance(dpi, int) or not 72 <= dpi <= 600:
+        raise ValueError("Rasterization DPI must be an integer from 72 to 600.")
+
+    document = None
+    page = None
+    bitmap = None
+    try:
+        document = pdfium.PdfDocument(pdf_bytes)
+        if page_number > len(document):
+            raise ValueError("Page number exceeds the PDF page count.")
+        page = document[page_number - 1]
+        width_points, height_points = page.get_size()
+        scale = dpi / 72
+        if (
+            not isfinite(width_points)
+            or not isfinite(height_points)
+            or width_points <= 0
+            or height_points <= 0
+        ):
+            raise ValueError("PDF page dimensions must be finite and positive.")
+        raster_width = ceil(width_points * scale)
+        raster_height = ceil(height_points * scale)
+        if raster_width * raster_height > _MAX_RASTER_PIXELS:
+            raise ValueError("PDF page dimensions exceed the rasterization limit.")
+        bitmap = page.render(scale=scale)
+        image = bitmap.to_pil().convert("RGB")
+        output = BytesIO()
+        image.save(output, format="PNG", optimize=False)
+        return output.getvalue()
+    except (pdfium.PdfiumError, OSError) as error:
+        raise ValueError("PDF source could not be rendered.") from error
+    finally:
+        if bitmap is not None:
+            bitmap.close()
+        if page is not None:
+            page.close()
+        if document is not None:
+            document.close()
 
 
 def redact_source_page(

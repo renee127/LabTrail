@@ -5,9 +5,14 @@ from io import BytesIO
 from uuid import UUID
 
 import pytesseract
+import pytest
 from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
 
-from labtrail_redaction import PageRowCoverageEvidence, redact_source_page
+from labtrail_redaction import (
+    PageRowCoverageEvidence,
+    rasterize_pdf_page,
+    redact_source_page,
+)
 from models import AcceptedObservation, CandidateExtraction, ClientShareGrant
 
 
@@ -110,6 +115,31 @@ def _synthetic_page() -> bytes:
     return output.getvalue()
 
 
+def _synthetic_pdf() -> bytes:
+    first_page = Image.new("RGB", (240, 120), "white")
+    first_draw = ImageDraw.Draw(first_page)
+    first_draw.text((20, 40), "FIRST PAGE", fill="black")
+    second_page = Image.new("RGB", (320, 160), "white")
+    second_draw = ImageDraw.Draw(second_page)
+    second_draw.text((20, 60), "SECOND PAGE", fill="black")
+    output = BytesIO()
+    first_page.save(
+        output,
+        format="PDF",
+        save_all=True,
+        append_images=[second_page],
+    )
+    return output.getvalue()
+
+
+def _pdf_from_page(page_bytes: bytes) -> bytes:
+    with Image.open(BytesIO(page_bytes)) as source:
+        page = source.convert("RGB")
+    output = BytesIO()
+    page.save(output, format="PDF")
+    return output.getvalue()
+
+
 def _redact(
     candidates: tuple[CandidateExtraction, ...],
     observations: tuple[AcceptedObservation, ...],
@@ -140,6 +170,94 @@ def _redact(
         mask_padding_pixels=2,
         row_coverage_evidence=row_coverage_evidence,
     )
+
+
+def test_rasterizes_selected_pdf_page_to_metadata_free_png() -> None:
+    rendered = rasterize_pdf_page(_synthetic_pdf(), 2, dpi=72)
+
+    with Image.open(BytesIO(rendered)) as page:
+        assert page.format == "PNG"
+        assert page.mode == "RGB"
+        assert page.size == (320, 160)
+        assert page.info == {}
+        assert "second page" in pytesseract.image_to_string(
+            page,
+            config="--psm 6",
+        ).casefold()
+
+
+def test_redacts_pdf_raster_and_ocr_checks_the_rendered_page() -> None:
+    page_raster = rasterize_pdf_page(_pdf_from_page(_synthetic_page()), 1, dpi=72)
+    granted = _candidate(
+        21,
+        analyte_code="GLUCOSE",
+        row_index=0,
+        bounding_box=(0.05, 0.15, 0.4, 0.65),
+        lifecycle_status="ACCEPTED",
+    )
+    ungranted = _candidate(
+        22,
+        analyte_code="SODIUM",
+        row_index=1,
+        bounding_box=(0.5, 0.15, 0.95, 0.65),
+        lifecycle_status="CANDIDATE",
+        raw_value="999",
+    )
+    evidence = PageRowCoverageEvidence(
+        report_id=REPORT_ID,
+        page_number=1,
+        extraction_job_id=granted.extraction_job_id,
+        source_page_sha256=sha256(page_raster).hexdigest(),
+        expected_row_indices=(0, 1),
+    )
+
+    result = redact_source_page(
+        page_raster=page_raster,
+        report_id=REPORT_ID,
+        page_number=1,
+        candidates=(granted, ungranted),
+        observations=(_accepted_observation(granted, analyte_code="GLUCOSE"),),
+        grant=GRANT,
+        as_of=NOW,
+        region_confidence_threshold=0.9,
+        mask_padding_pixels=2,
+        row_coverage_evidence=evidence,
+    )
+
+    assert result.disposition == "REDACTED_PNG"
+    assert result.redacted_png is not None
+    with Image.open(BytesIO(result.redacted_png)) as output:
+        text = pytesseract.image_to_string(output, config="--psm 6")
+    assert "sodium" not in text.casefold()
+    assert "999" not in text
+
+
+@pytest.mark.parametrize(
+    ("pdf_bytes", "page_number", "dpi"),
+    [
+        (b"", 1, 150),
+        (b"not a PDF", 1, 150),
+        (_synthetic_pdf(), 0, 150),
+        (_synthetic_pdf(), 3, 150),
+        (_synthetic_pdf(), 1, 71),
+    ],
+)
+def test_rejects_invalid_pdf_rasterization_inputs(
+    pdf_bytes: bytes,
+    page_number: int,
+    dpi: int,
+) -> None:
+    with pytest.raises(ValueError):
+        rasterize_pdf_page(pdf_bytes, page_number, dpi=dpi)
+
+
+def test_rejects_pdf_page_that_exceeds_raster_pixel_limit() -> None:
+    large_page = Image.new("RGB", (1000, 1000), "white")
+    output = BytesIO()
+    large_page.save(output, format="PDF")
+
+    with pytest.raises(ValueError, match="rasterization limit"):
+        rasterize_pdf_page(output.getvalue(), 1, dpi=600)
 
 
 def test_redacts_ungranted_row_and_emits_metadata_free_png() -> None:
