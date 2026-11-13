@@ -1,11 +1,13 @@
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from hashlib import sha256
 from io import BytesIO
 from uuid import UUID
 
-from PIL import Image, ImageDraw, PngImagePlugin
+import pytesseract
+from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
 
-from labtrail_redaction import redact_source_page
+from labtrail_redaction import PageRowCoverageEvidence, redact_source_page
 from models import AcceptedObservation, CandidateExtraction, ClientShareGrant
 
 
@@ -31,6 +33,7 @@ def _candidate(
     row_index: int,
     bounding_box: tuple[float, float, float, float] | None,
     lifecycle_status: str,
+    raw_value: str = "1.0",
     region_confidence: float = 0.99,
 ) -> CandidateExtraction:
     return CandidateExtraction(
@@ -40,7 +43,7 @@ def _candidate(
         row_index=row_index,
         raw_analyte_name=analyte_code,
         proposed_analyte_code=analyte_code,
-        raw_value="1.0",
+        raw_value=raw_value,
         raw_unit="unit",
         reference_interval=None,
         method_note=None,
@@ -95,10 +98,11 @@ def _accepted_observation(
 
 
 def _synthetic_page() -> bytes:
-    page = Image.new("RGB", (200, 100), "white")
+    page = Image.new("RGB", (1200, 400), "white")
     draw = ImageDraw.Draw(page)
-    draw.text((20, 26), "GLUCOSE 98", fill="black")
-    draw.text((120, 26), "SODIUM 999", fill="black")
+    font = ImageFont.load_default(size=48)
+    draw.text((60, 80), "GLUCOSE 98", fill="black", font=font)
+    draw.text((650, 80), "SODIUM 999", fill="black", font=font)
     metadata = PngImagePlugin.PngInfo()
     metadata.add_text("sensitive", "synthetic metadata")
     output = BytesIO()
@@ -110,10 +114,22 @@ def _redact(
     candidates: tuple[CandidateExtraction, ...],
     observations: tuple[AcceptedObservation, ...],
     *,
-    all_result_rows_accounted_for: bool = True,
+    row_coverage_evidence: PageRowCoverageEvidence | None = None,
 ):
+    page_raster = _synthetic_page()
+    if row_coverage_evidence is None:
+        first_candidate = candidates[0]
+        row_coverage_evidence = PageRowCoverageEvidence(
+            report_id=first_candidate.report_id,
+            page_number=first_candidate.page_number,
+            extraction_job_id=first_candidate.extraction_job_id,
+            source_page_sha256=sha256(page_raster).hexdigest(),
+            expected_row_indices=tuple(
+                sorted(candidate.row_index for candidate in candidates)
+            ),
+        )
     return redact_source_page(
-        page_raster=_synthetic_page(),
+        page_raster=page_raster,
         report_id=REPORT_ID,
         page_number=1,
         candidates=candidates,
@@ -122,7 +138,7 @@ def _redact(
         as_of=NOW,
         region_confidence_threshold=0.9,
         mask_padding_pixels=2,
-        all_result_rows_accounted_for=all_result_rows_accounted_for,
+        row_coverage_evidence=row_coverage_evidence,
     )
 
 
@@ -140,6 +156,7 @@ def test_redacts_ungranted_row_and_emits_metadata_free_png() -> None:
         row_index=1,
         bounding_box=(0.5, 0.15, 0.95, 0.65),
         lifecycle_status="CANDIDATE",
+        raw_value="999",
     )
 
     result = _redact(
@@ -147,6 +164,10 @@ def test_redacts_ungranted_row_and_emits_metadata_free_png() -> None:
         (_accepted_observation(granted, analyte_code="GLUCOSE"),),
     )
 
+    with Image.open(BytesIO(_synthetic_page())) as source:
+        source_text = pytesseract.image_to_string(source, config="--psm 6")
+    assert "sodium" in source_text.casefold()
+    assert "999" in source_text
     assert result.disposition == "REDACTED_PNG"
     assert result.withheld_reason is None
     assert result.masked_candidate_ids == (ungranted.candidate_id,)
@@ -156,10 +177,79 @@ def test_redacts_ungranted_row_and_emits_metadata_free_png() -> None:
         assert redacted.format == "PNG"
         assert redacted.mode == "RGB"
         assert "sensitive" not in redacted.info
-        assert redacted.getpixel((181, 20)) == (0, 0, 0)
-        redacted_allowed_region = redacted.crop((10, 15, 80, 65)).tobytes()
+        assert redacted.getpixel((1100, 160)) == (0, 0, 0)
+        redacted_text = pytesseract.image_to_string(redacted, config="--psm 6")
+        redacted_allowed_region = redacted.crop((20, 20, 560, 200)).tobytes()
+    assert "sodium" not in redacted_text.casefold()
+    assert "999" not in redacted_text
     with Image.open(BytesIO(_synthetic_page())) as source:
-        assert redacted_allowed_region == source.crop((10, 15, 80, 65)).tobytes()
+        assert redacted_allowed_region == source.crop((20, 20, 560, 200)).tobytes()
+
+
+def test_withholds_page_when_ocr_finds_unmasked_ungranted_text() -> None:
+    granted = _candidate(
+        15,
+        analyte_code="GLUCOSE",
+        row_index=0,
+        bounding_box=(0.05, 0.15, 0.4, 0.65),
+        lifecycle_status="ACCEPTED",
+    )
+    ungranted_with_inaccurate_region = _candidate(
+        16,
+        analyte_code="SODIUM",
+        row_index=1,
+        bounding_box=(0.8, 0.15, 0.97, 0.65),
+        lifecycle_status="CANDIDATE",
+        raw_value="999",
+    )
+
+    result = _redact(
+        (granted, ungranted_with_inaccurate_region),
+        (_accepted_observation(granted, analyte_code="GLUCOSE"),),
+    )
+
+    assert result.disposition == "WITHHELD"
+    assert result.withheld_reason == "OCR_LEAK_DETECTED"
+    assert result.redacted_png is None
+
+
+def test_withholds_page_when_ocr_cannot_recognize_redaction_label(
+    monkeypatch,
+) -> None:
+    granted = _candidate(
+        17,
+        analyte_code="GLUCOSE",
+        row_index=0,
+        bounding_box=(0.05, 0.15, 0.4, 0.65),
+        lifecycle_status="ACCEPTED",
+    )
+    ungranted = _candidate(
+        18,
+        analyte_code="SODIUM",
+        row_index=1,
+        bounding_box=(0.5, 0.15, 0.95, 0.65),
+        lifecycle_status="CANDIDATE",
+        raw_value="999",
+    )
+    monkeypatch.setattr(
+        "labtrail_redaction.pytesseract.image_to_data",
+        lambda *args, **kwargs: {
+            "text": [],
+            "left": [],
+            "top": [],
+            "width": [],
+            "height": [],
+        },
+    )
+
+    result = _redact(
+        (granted, ungranted),
+        (_accepted_observation(granted, analyte_code="GLUCOSE"),),
+    )
+
+    assert result.disposition == "WITHHELD"
+    assert result.withheld_reason == "OCR_VERIFICATION_FAILED"
+    assert result.redacted_png is None
 
 
 def test_withholds_page_when_row_coverage_is_unverified() -> None:
@@ -171,10 +261,53 @@ def test_withholds_page_when_row_coverage_is_unverified() -> None:
         lifecycle_status="ACCEPTED",
     )
 
+    page_raster = _synthetic_page()
+    evidence = PageRowCoverageEvidence(
+        report_id=REPORT_ID,
+        page_number=1,
+        extraction_job_id=granted.extraction_job_id,
+        source_page_sha256=sha256(page_raster).hexdigest(),
+        expected_row_indices=(0, 1),
+    )
     result = _redact(
         (granted,),
         (_accepted_observation(granted, analyte_code="GLUCOSE"),),
-        all_result_rows_accounted_for=False,
+        row_coverage_evidence=evidence,
+    )
+
+    assert result.disposition == "WITHHELD"
+    assert result.withheld_reason == "ROW_COVERAGE_UNVERIFIED"
+    assert result.redacted_png is None
+
+
+def test_withholds_page_when_coverage_evidence_is_missing() -> None:
+    granted = _candidate(
+        19,
+        analyte_code="GLUCOSE",
+        row_index=0,
+        bounding_box=(0.05, 0.15, 0.4, 0.65),
+        lifecycle_status="ACCEPTED",
+    )
+    ungranted = _candidate(
+        20,
+        analyte_code="SODIUM",
+        row_index=1,
+        bounding_box=(0.5, 0.15, 0.95, 0.65),
+        lifecycle_status="CANDIDATE",
+        raw_value="999",
+    )
+
+    result = redact_source_page(
+        page_raster=_synthetic_page(),
+        report_id=REPORT_ID,
+        page_number=1,
+        candidates=(granted, ungranted),
+        observations=(_accepted_observation(granted, analyte_code="GLUCOSE"),),
+        grant=GRANT,
+        as_of=NOW,
+        region_confidence_threshold=0.9,
+        mask_padding_pixels=2,
+        row_coverage_evidence=None,
     )
 
     assert result.disposition == "WITHHELD"
@@ -222,6 +355,7 @@ def test_withholds_page_when_any_row_region_is_missing() -> None:
         row_index=1,
         bounding_box=None,
         lifecycle_status="CANDIDATE",
+        raw_value="999",
         region_confidence=0.1,
     )
 
@@ -274,6 +408,7 @@ def test_withholds_page_when_any_row_region_is_unreliable() -> None:
         row_index=1,
         bounding_box=(0.5, 0.15, 0.95, 0.65),
         lifecycle_status="CANDIDATE",
+        raw_value="999",
         region_confidence=0.5,
     )
 
