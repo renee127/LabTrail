@@ -158,3 +158,6 @@ __pycache__/
 
 # Local stand-in for the LabTrail grant service (demo shares)
 .labtrail_server/
+
+# Local real-format lab report examples (may contain real names; never commit)
+labreportexamples/
