@@ -5,6 +5,7 @@ versioned unit table, and how a patient decision becomes an AcceptedObservation)
 so that the Streamlit UI in app.py stays thin and the rules stay testable.
 """
 
+import difflib
 import json
 import re
 from collections.abc import Iterable
@@ -95,10 +96,24 @@ class TimelinePoint:
     changes_from_previous: tuple[ComparabilityAttribute, ...]
 
 
+_OCR_LOOKALIKES = str.maketrans({"!": "l", "|": "l", "]": "l", "[": "l"})
+
+
 def suggest_analyte_code(raw_name: str) -> str | None:
-    """Suggest an analyte code from the printed name, or None if unknown."""
-    key = re.sub(r"\s+", " ", raw_name).strip().lower()
-    return _ANALYTE_ALIASES.get(key)
+    """Suggest an analyte code from the printed name, or None if unknown.
+
+    Tolerates common OCR look-alike errors ("Cholestero!", "Hemoglobin Aic") with a
+    strict similarity cutoff. This is only a suggestion; the patient confirms it.
+    """
+    key = re.sub(r"\s+", " ", raw_name.translate(_OCR_LOOKALIKES)).strip(" .:;,").lower()
+    if key in _ANALYTE_ALIASES:
+        return _ANALYTE_ALIASES[key]
+    # Fuzzy matching only within aliases sharing the exact first word, so that
+    # near-identical names for different tests (HDL vs LDL) are never conflated.
+    first_word = key.split(" ", 1)[0]
+    same_head = [alias for alias in _ANALYTE_ALIASES if alias.split(" ", 1)[0] == first_word]
+    close = difflib.get_close_matches(key, same_head, n=1, cutoff=0.88)
+    return _ANALYTE_ALIASES[close[0]] if close else None
 
 
 def suggest_report_metadata(result: CandidateExtractionResult) -> ReportMetadataSuggestion:

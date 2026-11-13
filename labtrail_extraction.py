@@ -1,6 +1,7 @@
 """Conservative local OCR-line extraction prototype for LabTrail."""
 
 import json
+import math
 import re
 from collections import defaultdict
 from dataclasses import asdict
@@ -11,9 +12,10 @@ from pathlib import Path
 from typing import Literal, TypedDict, cast
 from uuid import UUID, uuid4
 
+import numpy as np
 import pypdfium2 as pdfium
 import pytesseract
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 from pytesseract import Output
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
@@ -27,12 +29,23 @@ from models import (
 
 
 _TESSERACT_CONFIG = "--psm 6"
+# Low-resolution rasters (phone photos, ~100 dpi scans) are upscaled before OCR;
+# Tesseract misreads ~11 pt text below ~130 dpi. Sharper rasters are left alone
+# because resampling them softens glyphs and causes new misreads (A1c -> Aic).
+_UPSCALE_BELOW_WIDTH = 1100
+_OCR_TARGET_WIDTH = 2200
+_MAX_DESKEW_DEGREES = 5.0
+# Background brightness spread (5th-95th percentile) above which lighting is
+# treated as uneven and flattened before OCR.
+_UNEVEN_LIGHTING_SPREAD = 20.0
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 _RESULT_LINE_PATTERN = re.compile(
     r"^(?P<analyte>.+?)\s+"
-    r"(?P<value>(?:[<>≤≥]\s*)?[+-]?\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?)\s+"
+    r"(?P<value>(?:[<>≤≥]\s*)?[+-]?\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?)"
+    r"(?:\s+(?P<flag>HH|LL|H|L|A|\*))?\s+"
     r"(?P<unit>[A-Za-zµμ%][A-Za-z0-9µμ%./^*+-]*)(?:\s+(?P<rest>.*))?$"
 )
+_TRAILING_FLAG_PATTERN = re.compile(r"^(?P<flag>HH|LL|H|L|A|\*)(?:\s+|$)")
 _REFERENCE_INTERVAL_PATTERN = re.compile(
     r"^(?P<interval>\d+(?:\.\d+)?\s*[-–]\s*\d+(?:\.\d+)?|[<>≤≥]\s*\d+(?:\.\d+)?)(?:\s|$)"
 )
@@ -197,15 +210,25 @@ def _validate_upload_bytes(source_bytes: bytes, description: str) -> None:
 
 def _parse_result_line(
     text: str,
-) -> tuple[str, str | None, str | None, str | None]:
-    """Split one OCR line into analyte, value, unit, and a leading reference interval."""
+) -> tuple[str, str | None, str | None, str | None, str | None]:
+    """Split one OCR line into analyte, value, unit, reference interval, and lab flag.
+
+    A high/low flag printed by the lab (H, L, HH, LL, A, *) may sit between the value
+    and the unit or right after the unit; it is captured verbatim, never inferred.
+    """
     match = _RESULT_LINE_PATTERN.fullmatch(text)
     if match is None:
-        return text, None, None, None
+        return text, None, None, None, None
     analyte = match.group("analyte").strip()
     if not analyte or not any(character.isalpha() for character in analyte):
-        return text, None, None, None
-    interval_match = _REFERENCE_INTERVAL_PATTERN.match(match.group("rest") or "")
+        return text, None, None, None, None
+    flag = match.group("flag")
+    rest = match.group("rest") or ""
+    trailing_flag = _TRAILING_FLAG_PATTERN.match(rest)
+    if trailing_flag:
+        flag = flag or trailing_flag.group("flag")
+        rest = rest[trailing_flag.end():]
+    interval_match = _REFERENCE_INTERVAL_PATTERN.match(rest)
     reference_interval = (
         interval_match.group("interval").replace(" ", "") if interval_match else None
     )
@@ -214,6 +237,90 @@ def _parse_result_line(
         match.group("value").replace(" ", ""),
         match.group("unit"),
         reference_interval,
+        flag,
+    )
+
+
+def _estimate_skew_degrees(image: Image.Image) -> float:
+    """Estimate text-line skew by maximizing the sharpness of the row profile."""
+    small = image.convert("L")
+    if small.width > 1000:
+        small = small.resize((1000, max(1, round(small.height * 1000 / small.width))))
+    ink = small.point(lambda value: 255 if value < 140 else 0)
+    best_angle, best_score = 0.0, -1.0
+    for angle in np.arange(-_MAX_DESKEW_DEGREES, _MAX_DESKEW_DEGREES + 0.01, 0.2):
+        rows = np.asarray(ink.rotate(float(angle), fillcolor=0), dtype=np.float64).sum(axis=1)
+        score = float(np.sum(np.diff(rows) ** 2))
+        if score > best_score:
+            best_angle, best_score = float(angle), score
+    return best_angle if abs(best_angle) >= 0.3 else 0.0
+
+
+def _flatten_illumination(image: Image.Image) -> Image.Image:
+    """Remove uneven lighting by dividing by a heavily blurred background estimate.
+
+    Phone photos are darker toward one side; Tesseract's global threshold then
+    turns the dark side into speckle. Evenly lit pages are returned unchanged,
+    because the median filter that follows would soften crisp digital text.
+    """
+    radius = max(15, image.width // 60)
+    background = np.asarray(
+        image.filter(ImageFilter.GaussianBlur(radius)), dtype=np.float32
+    )
+    low, high = np.percentile(background, [5, 95])
+    if high - low < _UNEVEN_LIGHTING_SPREAD:
+        return image
+    pixels = np.asarray(image, dtype=np.float32)
+    flattened = np.clip(pixels / np.maximum(background, 1.0) * 255.0, 0, 255)
+    return Image.fromarray(flattened.astype(np.uint8)).filter(ImageFilter.MedianFilter(3))
+
+
+def _prepare_ocr_image(image: Image.Image) -> tuple[Image.Image, float]:
+    """Return a grayscale, contrast-stretched, upscaled, deskewed copy for OCR only.
+
+    The source raster is never modified. The returned angle is the counter-clockwise
+    rotation applied about the image center, so boxes can be mapped back.
+    """
+    prepared = ImageOps.autocontrast(image.convert("L"))
+    if prepared.width < _UPSCALE_BELOW_WIDTH:
+        scale = min(
+            _OCR_TARGET_WIDTH / prepared.width,
+            math.sqrt(MAX_RASTER_PIXELS / (prepared.width * prepared.height)),
+        )
+        if scale > 1.05:
+            prepared = prepared.resize(
+                (round(prepared.width * scale), round(prepared.height * scale)),
+                Image.Resampling.LANCZOS,
+            )
+    prepared = _flatten_illumination(prepared)
+    angle = _estimate_skew_degrees(prepared)
+    if angle:
+        prepared = prepared.rotate(angle, resample=Image.Resampling.BICUBIC, fillcolor=255)
+    return prepared, angle
+
+
+def _unrotate_box(
+    box: tuple[int, int, int, int], angle: float, width: int, height: int
+) -> tuple[float, float, float, float]:
+    """Map a box from the deskewed OCR image back to the unrotated page, normalized."""
+    left, top, right, bottom = box
+    if angle:
+        theta = math.radians(angle)
+        cos_t, sin_t = math.cos(theta), math.sin(theta)
+        cx, cy = width / 2, height / 2
+        points = [
+            (cx + (x - cx) * cos_t - (y - cy) * sin_t, cy + (x - cx) * sin_t + (y - cy) * cos_t)
+            for x, y in ((left, top), (right, top), (left, bottom), (right, bottom))
+        ]
+        left = min(x for x, _ in points)
+        right = max(x for x, _ in points)
+        top = min(y for _, y in points)
+        bottom = max(y for _, y in points)
+    return (
+        max(0.0, left / width),
+        max(0.0, top / height),
+        min(1.0, right / width),
+        min(1.0, bottom / height),
     )
 
 
@@ -353,8 +460,9 @@ def extract_ocr_line_candidates(
     except (OSError, UnidentifiedImageError) as error:
         raise ValueError("Source page must be a decodable raster image.") from error
 
+    ocr_image, skew_angle = _prepare_ocr_image(image)
     data = pytesseract.image_to_data(
-        image,
+        ocr_image,
         config=_TESSERACT_CONFIG,
         output_type=Output.DICT,
     )
@@ -385,15 +493,15 @@ def extract_ocr_line_candidates(
         ),
     )
     candidates: list[CandidateExtraction] = []
-    image_width, image_height = image.size
+    image_width, image_height = ocr_image.size
     model_version = str(pytesseract.get_tesseract_version())
     prompt_hash = sha256(b"").hexdigest()
 
     for words in ordered_lines:
         words.sort(key=lambda word: word[0])
         text = " ".join(word[4] for word in words)
-        analyte_name, raw_value, raw_unit, reference_interval = _parse_result_line(
-            text
+        analyte_name, raw_value, raw_unit, reference_interval, abnormal_flag = (
+            _parse_result_line(text)
         )
         left = max(0, min(word[0] for word in words))
         top = max(0, min(word[1] for word in words))
@@ -418,13 +526,10 @@ def extract_ocr_line_candidates(
                 reference_interval=reference_interval,
                 method_note=None,
                 specimen_type=None,
-                abnormal_flag=None,
+                abnormal_flag=abnormal_flag,
                 page_number=page_number,
-                bounding_box=(
-                    left / image_width,
-                    top / image_height,
-                    right / image_width,
-                    bottom / image_height,
+                bounding_box=_unrotate_box(
+                    (left, top, right, bottom), skew_angle, image_width, image_height
                 ),
                 region_available=True,
                 field_confidences={

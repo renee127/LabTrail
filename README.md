@@ -31,6 +31,9 @@ viewer, and revocation.
 
 Install Tesseract OCR (for example, `brew install tesseract` on macOS), then install
 the test dependencies with `python3 -m pip install -r requirements-dev.txt`.
+Measure extraction accuracy with `python3 scripts/benchmark_extraction.py`
+(results in [docs/benchmark_results.md](docs/benchmark_results.md); the pre-improvement
+run is in [docs/benchmark_baseline.md](docs/benchmark_baseline.md)).
 Run the test suite with `python3 -m pytest -q` and the synthetic manual scenario
 with `python3 manual_model_check.py`.
 

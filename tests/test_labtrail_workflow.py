@@ -53,7 +53,16 @@ def _accept(candidate, *, code="GLUCOSE", lab="Lab A", collected=date(2026, 2, 1
 
 @pytest.mark.parametrize(
     ("printed", "code"),
-    [("Glucose", "GLUCOSE"), ("Hemoglobin  A1c", "HBA1C"), ("LDL Cholesterol", "LDL_C"), ("Sodium", None)],
+    [
+        ("Glucose", "GLUCOSE"),
+        ("Hemoglobin  A1c", "HBA1C"),
+        ("LDL Cholesterol", "LDL_C"),
+        ("Hemoglobin Aic", "HBA1C"),
+        ("LDL Cholestero!", "LDL_C"),
+        ("LDL Cholesterol]", "LDL_C"),
+        ("Sodium", None),
+        ("HDL Cholesterol", None),
+    ],
 )
 def test_suggest_analyte_code(printed, code) -> None:
     assert suggest_analyte_code(printed) == code

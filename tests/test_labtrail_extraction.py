@@ -274,14 +274,18 @@ def test_ocr_extractor_result_cannot_make_a_page_delivery_ready() -> None:
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
-        ("Glucose 104 mg/dL 70-99", ("Glucose", "104", "mg/dL", "70-99")),
-        ("LDL Cholesterol 3.1 mmol/L <2.6", ("LDL Cholesterol", "3.1", "mmol/L", "<2.6")),
-        ("Hemoglobin A1c 6.1 %", ("Hemoglobin A1c", "6.1", "%", None)),
-        ("Glucose 97 mg/dL H", ("Glucose", "97", "mg/dL", None)),
-        ("Collected: 2026-02-10", ("Collected: 2026-02-10", None, None, None)),
+        ("Glucose 104 mg/dL 70-99", ("Glucose", "104", "mg/dL", "70-99", None)),
+        ("LDL Cholesterol 3.1 mmol/L <2.6", ("LDL Cholesterol", "3.1", "mmol/L", "<2.6", None)),
+        ("Hemoglobin A1c 6.1 %", ("Hemoglobin A1c", "6.1", "%", None, None)),
+        ("Glucose 97 mg/dL H", ("Glucose", "97", "mg/dL", None, "H")),
+        ("Glucose 104 H mg/dL 70-99", ("Glucose", "104", "mg/dL", "70-99", "H")),
+        ("Glucose 104 mg/dL H 70-99", ("Glucose", "104", "mg/dL", "70-99", "H")),
+        ("Potassium 3.1 L mmol/L 3.5-5.1", ("Potassium", "3.1", "mmol/L", "3.5-5.1", "L")),
+        ("Volume 2 L", ("Volume", "2", "L", None, None)),
+        ("Collected: 2026-02-10", ("Collected: 2026-02-10", None, None, None, None)),
     ],
 )
-def test_result_line_parser_captures_leading_reference_interval(
-    line: str, expected: tuple[str, str | None, str | None, str | None]
+def test_result_line_parser_captures_interval_and_flag(
+    line: str, expected: tuple[str, str | None, str | None, str | None, str | None]
 ) -> None:
     assert _parse_result_line(line) == expected

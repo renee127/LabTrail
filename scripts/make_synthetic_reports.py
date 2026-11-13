@@ -12,6 +12,7 @@ Run from the repository root:  python3 scripts/make_synthetic_reports.py
 """
 
 import json
+from io import BytesIO
 from pathlib import Path
 
 from reportlab.lib.pagesizes import letter
@@ -27,9 +28,9 @@ REPORTS = [
         "lab": "Harbor Reference Laboratory",
         "collected": "2026-02-10",
         "rows": [
-            ("Glucose", "104", "mg/dL", "70-99"),
-            ("Hemoglobin A1c", "6.1", "%", "4.0-5.6"),
-            ("LDL Cholesterol", "131", "mg/dL", "<100"),
+            ("Glucose", "104", "mg/dL", "70-99", "H"),
+            ("Hemoglobin A1c", "6.1", "%", "4.0-5.6", "H"),
+            ("LDL Cholesterol", "131", "mg/dL", "<100", "H"),
         ],
     },
     {
@@ -37,9 +38,9 @@ REPORTS = [
         "lab": "St. Brigid Hospital Laboratory",
         "collected": "2026-05-18",
         "rows": [
-            ("Glucose", "6.3", "mmol/L", "3.9-5.5"),
-            ("Hemoglobin A1c", "6.3", "%", "4.0-5.6"),
-            ("LDL Cholesterol", "3.1", "mmol/L", "<2.6"),
+            ("Glucose", "6.3", "mmol/L", "3.9-5.5", "H"),
+            ("Hemoglobin A1c", "6.3", "%", "4.0-5.6", "H"),
+            ("LDL Cholesterol", "3.1", "mmol/L", "<2.6", "H"),
         ],
     },
     {
@@ -47,16 +48,27 @@ REPORTS = [
         "lab": "Coastal Specialty Clinic Lab",
         "collected": "2026-09-03",
         "rows": [
-            ("Glucose", "97", "mg/dL", "74-106"),
-            ("Hemoglobin A1c", "44", "mmol/mol", "20-38"),
-            ("LDL Cholesterol", "104", "mg/dL", "<100"),
+            ("Glucose", "97", "mg/dL", "74-106", ""),
+            ("Hemoglobin A1c", "44", "mmol/mol", "20-38", "H"),
+            ("LDL Cholesterol", "104", "mg/dL", "<100", "H"),
         ],
     },
 ]
 
 
-def draw_report(path: Path, report: dict) -> None:
-    pdf = canvas.Canvas(str(path), pagesize=letter)
+LAYOUTS = ("table", "flagged")
+
+
+def render_report(report: dict, layout: str = "table") -> bytes:
+    """Render one report as PDF bytes.
+
+    ``table`` prints Test | Result | Units | Reference. ``flagged`` adds a high/low
+    flag column between the result and the units, as many real lab reports do.
+    """
+    if layout not in LAYOUTS:
+        raise ValueError(f"Unknown layout: {layout}")
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter, invariant=1)
     pdf.setTitle(f"{report['lab']} report")
     _, height = letter
     y = height - 72
@@ -72,26 +84,36 @@ def draw_report(path: Path, report: dict) -> None:
     pdf.drawString(72, y, f"Collected: {report['collected']}")
     y -= 36
 
-    columns = (72, 260, 330, 420)
+    if layout == "table":
+        columns = (72, 260, 330, 420)
+        headers = ("Test", "Result", "Units", "Reference")
+    else:
+        columns = (72, 250, 310, 350, 440)
+        headers = ("Test", "Result", "Flag", "Units", "Reference")
     pdf.setFont("Helvetica-Bold", 11)
-    for x, label in zip(columns, ("Test", "Result", "Units", "Reference")):
+    for x, label in zip(columns, headers):
         pdf.drawString(x, y, label)
     y -= 22
     pdf.setFont("Helvetica", 11)
-    for row in report["rows"]:
-        for x, cell in zip(columns, row):
-            pdf.drawString(x, y, cell)
+    for name, value, unit, interval, flag in report["rows"]:
+        cells = (name, value, unit, interval) if layout == "table" else (
+            name, value, flag, unit, interval
+        )
+        for x, cell in zip(columns, cells):
+            if cell:
+                pdf.drawString(x, y, cell)
         y -= 20
 
     pdf.showPage()
     pdf.save()
+    return buffer.getvalue()
 
 
 def main() -> None:
     OUTPUT_DIR.mkdir(exist_ok=True)
     ground_truth = []
     for report in REPORTS:
-        draw_report(OUTPUT_DIR / report["file"], report)
+        (OUTPUT_DIR / report["file"]).write_bytes(render_report(report))
         ground_truth.append(
             {
                 "file": report["file"],
@@ -104,8 +126,9 @@ def main() -> None:
                         "value": value,
                         "unit": unit,
                         "reference_interval": interval,
+                        "flag": flag or None,
                     }
-                    for name, value, unit, interval in report["rows"]
+                    for name, value, unit, interval, flag in report["rows"]
                 ],
             }
         )
