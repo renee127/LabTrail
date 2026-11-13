@@ -1,0 +1,192 @@
+Analyte Code,Test Name
+WBC,White Blood Cell Count
+RBC,Red Blood Cell Count
+HGB,Hemoglobin
+HCT,Hematocrit
+MCV,Mean Corpuscular Volume
+MCH,Mean Corpuscular Hemoglobin
+MCHC,Mean Corpuscular Hemoglobin Concentration
+RDW,Red Cell Distribution Width
+PLT,Platelet Count
+MPV,Mean Platelet Volume
+NEUT_ABS,Neutrophils (Absolute)
+LYMPH_ABS,Lymphocytes (Absolute)
+MONO_ABS,Monocytes (Absolute)
+EOS_ABS,Eosinophils (Absolute)
+BASO_ABS,Basophils (Absolute)
+NEUT_PCT,Neutrophils (%)
+LYMPH_PCT,Lymphocytes (%)
+MONO_PCT,Monocytes (%)
+EOS_PCT,Eosinophils (%)
+BASO_PCT,Basophils (%)
+RETIC,Reticulocyte Count
+SODIUM,Sodium
+POTASSIUM,Potassium
+CHLORIDE,Chloride
+CO2,Carbon Dioxide (Bicarbonate)
+GLUCOSE,Glucose
+BUN,Blood Urea Nitrogen
+CREATININE,Creatinine
+BUN_CR_RATIO,BUN/Creatinine Ratio
+CALCIUM,Calcium
+TOTAL_PROTEIN,Total Protein
+ALBUMIN,Albumin
+GLOBULIN,Globulin
+A_G_RATIO,Albumin/Globulin Ratio
+BILIRUBIN_TOTAL,Total Bilirubin
+BILIRUBIN_DIRECT,Direct Bilirubin
+ALP,Alkaline Phosphatase
+AST,Aspartate Aminotransferase
+ALT,Alanine Aminotransferase
+CHOL_TOTAL,Total Cholesterol
+TRIGLYCERIDES,Triglycerides
+HDL_C,High-Density Lipoprotein (HDL)
+LDL_C,Low-Density Lipoprotein (LDL)
+VLDL_C,Very Low-Density Lipoprotein (VLDL)
+NON_HDL_C,Non-HDL Cholesterol
+CHOL_HDL_RATIO,Cholesterol/HDL Ratio
+APOB,Apolipoprotein B
+LPA,Lipoprotein(a)
+TROPONIN_I,Troponin I
+TROPONIN_T,Troponin T
+CK,Creatine Kinase (Total)
+CK_MB,Creatine Kinase-MB
+BNP,B-Type Natriuretic Peptide
+NT_PRO_BNP,N-Terminal Pro B-Type Natriuretic Peptide
+TSH,Thyroid Stimulating Hormone
+FREE_T4,Free Thyroxine
+TOTAL_T4,Total Thyroxine
+FREE_T3,Free Triiodothyronine
+TOTAL_T3,Total Triiodothyronine
+TPO_AB,Thyroid Peroxidase Antibodies
+TG_AB,Thyroglobulin Antibodies
+HBA1C,Hemoglobin A1c
+INSULIN,Fasting Insulin
+C_PEPTIDE,C-Peptide
+MICROALBUMIN_URINE,Microalbumin (Urine)
+IRON,Serum Iron
+TIBC,Total Iron Binding Capacity
+UIBC,Unsaturated Iron Binding Capacity
+FERRITIN,Ferritin
+TRANSFERRIN,Transferrin
+TRANSFERRIN_SAT,Transferrin Saturation (%)
+FOLATE,Folate (Vitamin B9)
+B12,Vitamin B12 (Cyanocobalamin)
+PT,Prothrombin Time
+INR,International Normalized Ratio
+APTT,Activated Partial Thromboplastin Time
+D_DIMER,D-Dimer
+FIBRINOGEN,Fibrinogen
+CRP,C-Reactive Protein
+HS_CRP,High-Sensitivity C-Reactive Protein
+ESR,Erythrocyte Sedimentation Rate
+PROCALCITONIN,Procalcitonin
+LACTIC_ACID,Lactic Acid / Lactate
+VITAMIN_D_25OH,25-Hydroxyvitamin D
+MAGNESIUM,Magnesium
+PHOSPHORUS,Phosphorus / Phosphate
+ZINC,Zinc
+COPPER,Copper
+TESTOSTERONE_TOTAL,Total Testosterone
+TESTOSTERONE_FREE,Free Testosterone
+ESTRADIOL,Estradiol (E2)
+ESTRONE,Estrone (E1)
+FSH,Follicle Stimulating Hormone
+LH,Luteinizing Hormone
+PROGESTERONE,Progesterone
+PROLACTIN,Prolactin
+SHBG,Sex Hormone Binding Globulin
+DHEA_S,DHEA-Sulfate
+HCG_QUAL,hCG (Pregnancy Qualitative)
+HCG_QUANT,hCG (Quantitative)
+CORTISOL_AM,Cortisol (AM)
+CORTISOL_PM,Cortisol (PM)
+ACTH,Adrenocorticotropic Hormone
+PTH,Parathyroid Hormone (Intact)
+IGF_1,Insulin-like Growth Factor 1
+ALDOSTERONE,Aldosterone
+RENIN,Renin
+UA_COLOR,Urine Color
+UA_APPEARANCE,Urine Appearance / Clarity
+UA_SP_GRAVITY,Specific Gravity
+UA_PH,Urine pH
+UA_GLUCOSE,Urine Glucose
+UA_BILIRUBIN,Urine Bilirubin
+UA_KETONES,Urine Ketones
+UA_OCCULT_BLOOD,Occult Blood
+UA_PROTEIN,Urine Protein
+UA_UROBILINOGEN,Urobilinogen
+UA_NITRITE,Urine Nitrite
+UA_LEUK_ESTERASE,Leukocyte Esterase
+UA_WBC,Urine WBC (Microscopic)
+UA_RBC,Urine RBC (Microscopic)
+UA_SQUAMOUS_EPITH,Squamous Epithelial Cells
+UA_BACTERIA,Urine Bacteria
+UA_YEAST,Urine Yeast
+UA_CASTS,Urine Casts
+UA_CRYSTALS,Urine Crystals
+HIV_AG_AB,HIV Antigen/Antibody Screen
+HBS_AG,Hepatitis B Surface Antigen
+HBS_AB,Hepatitis B Surface Antibody
+HBC_AB,Hepatitis B Core Antibody
+HCV_AB,Hepatitis C Antibody
+HAV_AB_IGM,Hepatitis A IgM Antibody
+HAV_AB_TOTAL,Hepatitis A Total Antibody
+SYPHILIS_RPR,RPR (Syphilis)
+TREPONEMA_AB,Treponema Pallidum Antibody
+EBV_VCA_IGG,EBV VCA IgG (Mononucleosis)
+EBV_VCA_IGM,EBV VCA IgM
+CMV_IGG,Cytomegalovirus IgG
+CMV_IGM,Cytomegalovirus IgM
+LYME_AB,Lyme Disease Antibody Screen
+H_PYLORI_AG,Helicobacter Pylori Antigen (Stool)
+SARS_COV_2_PCR,COVID-19 PCR
+FLU_A_B_AG,Influenza A/B Rapid Antigen
+STREP_A_AG,Streptococcus Group A Rapid Antigen
+ANA,Antinuclear Antibodies (Screen)
+RHEUMATOID_FACTOR,Rheumatoid Factor (RF)
+ANTI_CCP,Cyclic Citrullinated Peptide Antibody
+DNA_DS_AB,Double-Stranded DNA Antibody
+SM_AB,Anti-Smith Antibody
+SSA_RO_AB,Anti-SSA (Ro)
+SSB_LA_AB,Anti-SSB (La)
+RNP_AB,Anti-RNP
+ANCA,Antineutrophil Cytoplasmic Antibodies
+CELIAC_TTG_IGA,Tissue Transglutaminase IgA (Celiac)
+CELIAC_TOTAL_IGA,Total IgA
+PSA_TOTAL,Prostate Specific Antigen (Total)
+PSA_FREE,Prostate Specific Antigen (Free)
+CEA,Carcinoembryonic Antigen
+CA_125,Cancer Antigen 125 (Ovarian)
+CA_15_3,Cancer Antigen 15-3 (Breast)
+CA_19_9,Cancer Antigen 19-9 (Pancreatic)
+AFP,Alpha-Fetoprotein
+IGE_TOTAL,Total IgE
+ALLERGY_PEANUT,Peanut IgE
+ALLERGY_MILK,Cow's Milk IgE
+ALLERGY_EGG,Egg White IgE
+ALLERGY_WHEAT,Wheat IgE
+ALLERGY_SOY,Soybean IgE
+ALLERGY_DUST_MITE,Dust Mite IgE
+ALLERGY_CAT_DANDER,Cat Dander IgE
+ALLERGY_DOG_DANDER,Dog Dander IgE
+ALLERGY_MOLD,Mold (Alternaria/Aspergillus) IgE
+PH_BLOOD,Blood pH
+PCO2,Partial Pressure of Carbon Dioxide
+PO2,Partial Pressure of Oxygen
+HCO3_ACTUAL,Actual Bicarbonate
+O2_SATURATION,Oxygen Saturation
+BASE_EXCESS,Base Excess
+LITHIUM,Lithium Level
+DIGOXIN,Digoxin Level
+PHENYTOIN,Phenytoin Level
+VALPROIC_ACID,Valproic Acid Level
+TACROLIMUS,Tacrolimus Level
+ACETAMINOPHEN,Acetaminophen Level
+SALICYLATE,Salicylate Level
+ETHANOL,Ethanol / Alcohol Blood
+UDS_AMPHETAMINES,Urine Amphetamines
+UDS_BENZODIAZEPINES,Urine Benzodiazepines
+UDS_CANNABINOIDS,Urine Cannabinoids (THC)
+UDS_COCAINE,Urine Cocaine
+UDS_OPIATES,Urine Opiates

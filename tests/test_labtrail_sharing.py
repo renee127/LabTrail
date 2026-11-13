@@ -60,11 +60,21 @@ def test_recipient_with_link_code_and_email_can_open(server) -> None:
 
 def test_server_cannot_read_the_share(server) -> None:
     _, sent = _send(server)
-    stored = (server.root / f"{sent.grant_id}.json").read_text()
-    ciphertext = base64.b64decode(json.loads(stored)["bundle_ciphertext"])
+    entry = json.loads((server.root / f"{sent.grant_id}.json").read_text())
+    ciphertext = base64.b64decode(entry["bundle_ciphertext"])
+    # Random fields (keys, nonce, hashes) can contain any digits by chance, so the
+    # readable-content check covers every other stored field.
+    random_fields = {"bundle_ciphertext", "iv", "server_share", "second_factor_verifier",
+                     "recipient_identity_hash", "events", "grant_id"}
+    readable = json.dumps({k: v for k, v in entry.items() if k not in random_fields})
+    readable += json.dumps([{k: v for k, v in e.items() if not k.endswith("hash")} for e in entry["events"]])
     for secret in ("GLUCOSE", "104", "Dr. Test", "clinician", sent.access_code):
-        assert secret not in stored
+        assert secret not in readable
+    for secret in ("GLUCOSE", "Dr. Test", "clinician"):
         assert secret.encode() not in ciphertext
+    assert set(entry) - random_fields == {
+        "schema_version", "failed_attempts", "status", "created_at", "expires_at", "revoked_at",
+    }
     # The server's half alone is not the key: decrypting with it fails closed.
     with pytest.raises(ShareDecryptionError):
         _open(server, sent, share=bytes(32))

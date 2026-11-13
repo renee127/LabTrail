@@ -33,6 +33,7 @@ from labtrail_workflow import (
     build_share,
     confirm_page_coverage,
     is_result_like,
+    plan_chart,
     suggest_analyte_code,
     suggest_report_metadata,
 )
@@ -246,7 +247,7 @@ def page_review() -> None:
         st.info("Confirm at least one report on the **Upload** page first.")
         return
 
-    analyte_options = ["(choose)"] + list(ANALYTE_LABELS)
+    analyte_options = ["(choose)"] + sorted(ANALYTE_LABELS, key=lambda c: ANALYTE_LABELS[c].casefold())
     for report_id, report in confirmed:
         mandatory, standard = partition_review_queue(
             ss.candidates[c.candidate_id] for c in report["result"].candidates
@@ -334,6 +335,23 @@ def _show_source(observation) -> None:
             st.image(report["pages"][observation.page_number])
 
 
+def _chart_row(observation) -> dict:
+    return {
+        "canonical_value": observation.canonical_value,
+        "canonical_unit": observation.canonical_unit,
+        "original_value": observation.original_value,
+        "original_unit": observation.original_unit,
+        "unconvertible_reason": observation.unconvertible_reason,
+    }
+
+
+def _axis_title(code: str, unit: str | None, as_reported: bool) -> str:
+    label = ANALYTE_LABELS.get(code, code)
+    if not unit:
+        return label
+    return f"{label} ({unit}{', as reported' if as_reported else ''})"
+
+
 def page_timeline() -> None:
     ss = _state()
     st.header("3 · Timeline")
@@ -347,18 +365,24 @@ def page_timeline() -> None:
         st.info("Accept some results on the **Review** page first.")
         return
 
-    available = [code for code in ANALYTE_LABELS if any(o.analyte_code == code for o in active)]
-    code = st.radio("Analyte", available, format_func=ANALYTE_LABELS.get, horizontal=True)
+    available = sorted(
+        {o.analyte_code for o in active}, key=lambda c: ANALYTE_LABELS.get(c, c).casefold()
+    )
+    if len(available) <= 6:
+        code = st.radio("Analyte", available, format_func=ANALYTE_LABELS.get, horizontal=True)
+    else:
+        code = st.selectbox("Analyte", available, format_func=ANALYTE_LABELS.get)
     points = analyte_timeline(ss.observations, code)
-    plotted = [p for p in points if p.observation.canonical_value is not None]
-    retained = [p for p in points if p.observation.canonical_value is None]
+    plan = plan_chart([_chart_row(p.observation) for p in points])
+    plotted = [points[i] for i in plan.plotted]
+    retained = [points[i] for i in plan.listed]
 
     if plotted:
-        unit = plotted[0].observation.canonical_unit
+        unit = plan.unit
         df = pd.DataFrame([
             {
                 "date": pd.Timestamp(p.observation.collection_datetime),
-                "value": float(p.observation.canonical_value),
+                "value": float(p.observation.original_value if plan.as_reported else p.observation.canonical_value),
                 "lab": p.observation.source_lab,
                 "as reported": f"{p.observation.original_value} {p.observation.original_unit}",
                 "reference range": p.observation.reference_interval or "—",
@@ -369,7 +393,7 @@ def page_timeline() -> None:
         tooltip = ["date:T", "value:Q", "lab:N", "as reported:N", "reference range:N", "comparability:N"]
         line = alt.Chart(df).mark_line(color="#888").encode(
             x=alt.X("date:T", title="Collection date"),
-            y=alt.Y("value:Q", title=f"{ANALYTE_LABELS[code]} ({unit})", scale=alt.Scale(zero=False)),
+            y=alt.Y("value:Q", title=_axis_title(code, unit, plan.as_reported), scale=alt.Scale(zero=False)),
         )
         dots = alt.Chart(df).mark_point(size=120, filled=True).encode(
             x="date:T", y="value:Q", shape=alt.Shape("lab:N", title="Lab"), tooltip=tooltip
@@ -381,7 +405,10 @@ def page_timeline() -> None:
             layers.append(alt.Chart(nd).mark_rule(strokeDash=[4, 4], color="#c77d00").encode(
                 x="date:T", tooltip=["date:T", "category:N", "note:N"]))
         st.altair_chart(alt.layer(*layers).properties(height=320), width="stretch")
-        st.caption("Dashed lines are your context notes. Hover a point for its source details.")
+        st.caption(
+            "Dashed lines are your context notes. Hover a point for its source details."
+            + (" Plotted in the unit printed on every report; no conversion rule exists for this test." if plan.as_reported else "")
+        )
 
     st.write("**All results for this analyte**")
     widths = [2, 3, 2, 2, 2, 3, 1, 1]
@@ -418,7 +445,8 @@ def page_timeline() -> None:
             "Not plotted: " + "; ".join(
                 f"{p.observation.original_value} {p.observation.original_unit} on {p.observation.collection_datetime} "
                 f"({p.observation.source_lab})" for p in retained
-            ) + ". No supported conversion to the chart's unit exists, so the value is kept exactly as reported."
+            ) + ". Kept exactly as reported. Text results are never plotted, and values are drawn "
+            "together only when they share a unit or a versioned conversion rule exists."
         )
 
     duplicates = find_duplicate_observation_groups(active)
@@ -724,15 +752,17 @@ def page_recipient(grant_param: str, key_param: str) -> None:
         by_analyte.setdefault(o["analyte_code"], []).append(o)
     for code, rows in by_analyte.items():
         st.subheader(ANALYTE_LABELS.get(code, code))
-        plotted = [r for r in rows if r["canonical_value"] is not None]
+        plan = plan_chart(rows)
+        plotted = [rows[i] for i in plan.plotted]
         if plotted:
+            value_key = "original_value" if plan.as_reported else "canonical_value"
             df = pd.DataFrame([
-                {"date": pd.Timestamp(r["collection_datetime"]), "value": float(r["canonical_value"]),
+                {"date": pd.Timestamp(r["collection_datetime"]), "value": float(r[value_key]),
                  "lab": r["source_lab"]} for r in plotted
             ])
             chart = alt.Chart(df).mark_line(point=alt.OverlayMarkDef(size=90, filled=True), color="#888").encode(
                 x=alt.X("date:T", title="Collection date"),
-                y=alt.Y("value:Q", title=f"{ANALYTE_LABELS.get(code, code)} ({plotted[0]['canonical_unit']})",
+                y=alt.Y("value:Q", title=_axis_title(code, plan.unit, plan.as_reported),
                         scale=alt.Scale(zero=False)),
                 tooltip=["date:T", "value:Q", "lab:N"],
             )

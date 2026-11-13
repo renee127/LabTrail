@@ -17,8 +17,8 @@ The demo walks through one end-to-end slice with synthetic data only:
    collection date, and that the printed name is yours.
 2. **Review**: accept, correct, or reject each extracted row next to a crop of the
    source page. Nothing enters the record automatically.
-3. **Timeline**: one chart per analyte across labs, converted with a versioned unit
-   table, with markers when the lab, unit, or reference range changes. Values with no
+3. **Timeline**: one chart per test across labs (191 tests listed in
+   `reference/lab_tests.csv`), converted with a versioned unit table, with markers when the lab, unit, or reference range changes. Values with no
    supported conversion (e.g. HbA1c in mmol/mol) are listed, not plotted.
 4. **Share**: pick analytes, dates, and a recipient, then **Prepare share**. Pages you
    confirmed complete become flattened images with every other line masked (and pass

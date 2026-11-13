@@ -2,7 +2,7 @@
 
 from streamlit.testing.v1 import AppTest
 
-from labtrail_workflow import ANALYTE_LABELS, SIDEBAR_NOTICE, find_interpretive_language
+from labtrail_workflow import SIDEBAR_NOTICE, find_interpretive_language
 
 
 def _click(at: AppTest, label_prefix: str, index: int = 0) -> None:
@@ -76,7 +76,7 @@ def test_upload_confirm_review_timeline_share(tmp_path, monkeypatch) -> None:
     assert any("different reported unit" in m.value for m in at.markdown)
     _assert_no_interpretation(at, "Timeline")
     assert "different reported unit" in _visible_text(at)
-    for analyte in ANALYTE_LABELS:
+    for analyte in sorted({o.analyte_code for o in at.session_state["observations"]}):
         at.radio[0].set_value(analyte)
         at.run()
         _assert_no_interpretation(at, f"Timeline/{analyte}")

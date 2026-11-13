@@ -1,6 +1,6 @@
 # Extraction benchmark results
 
-Generated 2026-11-12 by `scripts/benchmark_extraction.py` with Tesseract 5.5.4.
+Generated 2026-11-13 by `scripts/benchmark_extraction.py` with Tesseract 5.5.4.
 
 The extractor is the conservative OCR-line prototype in `labtrail_extraction.py`. Every report is synthetic (3 fictional labs × 3 results). Degraded conditions are rendered with seeds 1, 2, 3, so each covers 27 result rows; native PDF conditions cover 9.
 

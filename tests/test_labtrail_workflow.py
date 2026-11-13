@@ -13,7 +13,10 @@ from io import BytesIO
 from labtrail_extraction import extract_document_ocr_line_candidates
 from labtrail_redaction import rasterize_pdf_page, redact_source_page
 from labtrail_workflow import (
+    ANALYTE_LABELS,
     accept_candidate,
+    load_analyte_table,
+    plan_chart,
     TIMELINE_NOTICE,
     SIDEBAR_NOTICE,
     confirm_page_coverage,
@@ -69,8 +72,16 @@ def _accept(candidate, *, code="GLUCOSE", lab="Lab A", collected=date(2026, 2, 1
         ("Hemoglobin Aic", "HBA1C"),
         ("LDL Cholestero!", "LDL_C"),
         ("LDL Cholesterol]", "LDL_C"),
-        ("Sodium", None),
-        ("HDL Cholesterol", None),
+        ("Sodium", "SODIUM"),
+        ("HDL Cholesterol", "HDL_C"),
+        ("TOTAL CHOLESTEROL", "CHOL_TOTAL"),
+        ("Non-HDL Cholesterol", "NON_HDL_C"),
+        ("TSH", "TSH"),
+        ("Vitamin B12 (Cyanocobalamin)", "B12"),
+        ("Cyanocobalamin", "B12"),
+        ("Neutrophils", None),      # absolute count or percentage: ambiguous
+        ("Troponin l", None),       # OCR misread, equally close to I and T
+        ("Zebra Enzyme", None),
     ],
 )
 def test_suggest_analyte_code(printed, code) -> None:
@@ -107,11 +118,38 @@ def test_ifcc_hba1c_is_retained_not_converted() -> None:
     assert observation.original_value == "44"
 
 
-def test_accept_requires_a_supported_analyte_and_numeric_value() -> None:
+def test_accept_requires_a_supported_analyte_and_clean_value() -> None:
     with pytest.raises(ValueError):
         _accept(_candidate(), code="(choose)")
-    with pytest.raises(ValueError):
-        _accept(_candidate(), value="high")
+    with pytest.raises(ValueError, match="not a number"):
+        _accept(_candidate(), value="1O4")  # letter O read for zero
+    with pytest.raises(ValueError, match="unit"):
+        _accept(_candidate(), unit="")
+
+
+def test_hdl_is_never_suggested_as_ldl() -> None:
+    assert suggest_analyte_code("HDL Cholesterol") != suggest_analyte_code("LDL Cholesterol")
+
+
+@pytest.mark.parametrize("value", ["Negative", "Yellow", "Not detected", "<0.5", "> 1000"])
+def test_text_and_censored_results_are_kept_as_printed(value) -> None:
+    observation = _accept(_candidate(raw_value=value, raw_unit=""), code="UA_COLOR")
+    assert observation.original_value == value
+    assert observation.conversion_outcome == "UNCONVERTIBLE_RETAINED"
+    assert observation.unconvertible_reason == "NON_NUMERIC_RESULT"
+
+
+def test_unit_spelling_matches_rule_but_printed_unit_is_kept() -> None:
+    observation = _accept(_candidate(raw_unit="mg/dl"))
+    assert observation.conversion_outcome == "CANONICAL_DIRECT"
+    assert observation.original_unit == "mg/dl"
+    lipid = _accept(_candidate(raw_analyte_name="HDL Cholesterol", raw_value="1.4", raw_unit="MMOL/L"), code="HDL_C")
+    assert lipid.canonical_value == Decimal("1.4") * Decimal("38.67")
+
+
+def test_unitless_number_allowed_only_without_a_unit_rule() -> None:
+    inr = _accept(_candidate(raw_analyte_name="INR", raw_value="1.1", raw_unit=""), code="INR")
+    assert inr.unconvertible_reason == "NO_CANONICAL_UNIT_DEFINED"
 
 
 def test_timeline_orders_by_date_and_flags_comparability_changes() -> None:
@@ -262,3 +300,44 @@ def test_interpretive_language_is_detected(text) -> None:
 )
 def test_neutral_text_and_fixed_notices_pass(text) -> None:
     assert find_interpretive_language(text) == []
+
+
+def _row(canonical=None, unit=None, original="1", original_unit="mg/dL", reason=None):
+    return {"canonical_value": canonical, "canonical_unit": unit, "original_value": original,
+            "original_unit": original_unit, "unconvertible_reason": reason}
+
+
+def test_chart_plan_prefers_converted_values() -> None:
+    plan = plan_chart([_row(Decimal("1"), "mg/dL"), _row(reason="NO_SUPPORTED_CONVERSION")])
+    assert (plan.unit, plan.as_reported, plan.plotted, plan.listed) == ("mg/dL", False, (0,), (1,))
+
+
+def test_chart_plan_plots_as_reported_only_in_one_unit() -> None:
+    same = [_row(original="140", original_unit="mmol/L", reason="NO_CANONICAL_UNIT_DEFINED"),
+            _row(original="138", original_unit="MMOL/L", reason="NO_CANONICAL_UNIT_DEFINED"),
+            _row(original="Negative", original_unit="", reason="NON_NUMERIC_RESULT")]
+    plan = plan_chart(same)
+    assert (plan.unit, plan.as_reported, plan.plotted, plan.listed) == ("mmol/L", True, (0, 1), (2,))
+    mixed = [_row(original="140", original_unit="mmol/L", reason="NO_CANONICAL_UNIT_DEFINED"),
+             _row(original="3.2", original_unit="mg/dL", reason="NO_CANONICAL_UNIT_DEFINED")]
+    assert plan_chart(mixed).plotted == ()
+
+
+def test_analyte_table_loads_csv_and_rejects_bad_rows(tmp_path) -> None:
+    assert len(ANALYTE_LABELS) == 191 and ANALYTE_LABELS["GLUCOSE"] == "Glucose"
+    good = tmp_path / "ok.csv"
+    good.write_text("Analyte Code,Test Name\nNA,Sodium\n")
+    assert load_analyte_table(good) == {"NA": "Sodium"}
+    for body in ("Analyte Code,Test Name\nNA,Sodium\nNA,Sodium again\n",
+                 "Analyte Code,Test Name\nna-1,Sodium\n",
+                 "Analyte Code,Test Name\nNA,\n"):
+        bad = tmp_path / "bad.csv"
+        bad.write_text(body)
+        with pytest.raises(ValueError):
+            load_analyte_table(bad)
+
+
+def test_test_names_are_not_mistaken_for_interpretation() -> None:
+    assert find_interpretive_language("High-Density Lipoprotein (HDL) 55 mg/dL") == []
+    assert find_interpretive_language("Very Low-Density Lipoprotein (VLDL)") == []
+    assert find_interpretive_language("HDL is high") == ["high"]
