@@ -245,3 +245,22 @@ def test_identification_lines_are_rejected_on_upload_and_restorable(tmp_path, mo
     assert len(restored) == 1
     report = at.session_state["reports"][restored[0].report_id]
     assert report["result"].page_inventories[0].inventory_status == "INCOMPLETE"
+
+
+def test_unreachable_share_database_shows_advice_instead_of_crashing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LABTRAIL_DATABASE_URL", "postgresql://user:secret-pw@127.0.0.1:1/db")
+    at = AppTest.from_file("../app.py", default_timeout=120)
+    at.run()
+    _click(at, "Load 3 synthetic sample reports")
+    assert len(at.session_state["reports"]) == 3  # the rest of the app still works
+    at.sidebar.radio[0].set_value("Share")
+    at.run()
+    at.sidebar.radio[0].set_value("Upload")
+    at.run()
+    # Open a share link: the recipient view needs the database.
+    viewer = AppTest.from_file("../app.py", default_timeout=120)
+    viewer.query_params.update({"share": "00000000-0000-0000-0000-000000000001", "k": "A" * 43})
+    viewer.run()
+    assert not viewer.exception
+    assert any("Sharing is unavailable" in e.value for e in viewer.error)
+    assert not any("secret-pw" in e.value for e in viewer.error)

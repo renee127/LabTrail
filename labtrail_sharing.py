@@ -169,8 +169,17 @@ class SqlGrantStore:
 
         self._sa = sa
         url = _normalize_database_url(url)
-        connect_args = {"prepare_threshold": None} if url.startswith("postgresql+psycopg") else {}
-        self._engine = sa.create_engine(url, pool_pre_ping=True, connect_args=connect_args)
+        connect_args = (
+            {"prepare_threshold": None, "connect_timeout": 10}
+            if url.startswith("postgresql+psycopg") else {}
+        )
+        try:
+            self._engine = sa.create_engine(url, pool_pre_ping=True, connect_args=connect_args)
+        except (sa.exc.ArgumentError, ValueError) as error:
+            raise StorageUnavailable(
+                "LABTRAIL_DATABASE_URL is not a valid connection string. It should start with "
+                "postgresql:// and be wrapped in double quotes in the secrets."
+            ) from error
         self._sqlite_lock = threading.RLock() if self._engine.dialect.name == "sqlite" else None
         metadata = sa.MetaData()
         self._table = sa.Table(
@@ -181,7 +190,16 @@ class SqlGrantStore:
             sa.Column("expires_at", sa.String(40), nullable=False),
             sa.Column("entry", sa.Text, nullable=False),
         )
-        metadata.create_all(self._engine)
+        try:
+            metadata.create_all(self._engine)
+        except sa.exc.OperationalError as error:
+            self._engine.dispose()
+            raise StorageUnavailable(describe_connection_error(error)) from error
+        except sa.exc.ArgumentError as error:
+            raise StorageUnavailable(
+                "LABTRAIL_DATABASE_URL is not a valid connection string. It should start with "
+                "postgresql:// and be wrapped in double quotes in the secrets."
+            ) from error
         self.description = f"{self._engine.dialect.name} database (persistent)"
 
     @contextmanager
@@ -237,6 +255,47 @@ class SqlGrantStore:
         t = self._table
         with self._engine.connect() as conn:
             return [r[0] for r in conn.execute(self._sa.select(t.c.grant_id).where(t.c.status == "ACTIVE"))]
+
+
+class StorageUnavailable(Exception):
+    """The configured share database could not be reached; .hint says what to check."""
+
+    def __init__(self, hint: str) -> None:
+        super().__init__(hint)
+        self.hint = hint
+
+
+# Known connection failures and what to check. Matched against the driver's
+# message, which never contains the password.
+_CONNECTION_HINTS = (
+    ("password authentication failed",
+     "The database rejected the password. Replace [YOUR-PASSWORD] (including the brackets) "
+     "with your database password, and encode symbols such as @ as %40."),
+    ("tenant or user not found",
+     "Unknown user. With the Supabase pooler the user name must be postgres.<project-id>."),
+    ("could not translate host name",
+     "The host name could not be found. Copy the Session pooler string; its host ends in "
+     "pooler.supabase.com."),
+    ("network is unreachable",
+     "The host is only reachable over IPv6. Use the Session pooler connection string instead "
+     "of the direct connection."),
+    ("timeout",
+     "The database did not answer in time. Check the project is running (not paused)."),
+    ("connection refused",
+     "The database refused the connection. Check the host and port (5432 for the session pooler)."),
+    ("ssl",
+     "The connection needs SSL. Add ?sslmode=require to the end of the connection string."),
+)
+
+
+def describe_connection_error(error: BaseException) -> str:
+    """A safe, actionable explanation of a database connection failure."""
+    message = str(getattr(error, "orig", None) or error).lower()
+    for needle, hint in _CONNECTION_HINTS:
+        if needle in message:
+            return hint
+    return ("The share database could not be reached. Check LABTRAIL_DATABASE_URL in the app's "
+            "secrets and the app logs for details.")
 
 
 def _normalize_database_url(url: str) -> str:

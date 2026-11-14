@@ -331,7 +331,7 @@ accuracy is measured separately in [benchmark_results.md](benchmark_results.md).
 
 ## 7. Validation summary
 
-- **258 automated tests** run on every push (GitHub Actions), including a test that
+- **266 automated tests** run on every push (GitHub Actions), including a test that
   drives the real app through upload, review, timeline, redacted share, and
   encrypted save.
 - **Extraction accuracy** (row exact: value, unit, and range all correct): 100% on

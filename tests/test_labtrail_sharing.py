@@ -9,7 +9,9 @@ import pytest
 
 from labtrail_sharing import (
     MAX_FAILED_ATTEMPTS,
+    StorageUnavailable,
     _normalize_database_url,
+    describe_connection_error,
     AccessDenied,
     ShareDecryptionError,
     ShareServer,
@@ -237,3 +239,26 @@ def test_shares_survive_a_restart_with_a_database(tmp_path) -> None:
 )
 def test_provider_database_urls_are_normalized(given, expected) -> None:
     assert _normalize_database_url(given) == expected
+
+
+@pytest.mark.parametrize(
+    ("driver_message", "advice"),
+    [
+        ('FATAL: password authentication failed for user "postgres.xxxx"', "[YOUR-PASSWORD]"),
+        ("FATAL: Tenant or user not found", "postgres.<project-id>"),
+        ('could not translate host name "db.xxxx.supabase.co" to address', "pooler.supabase.com"),
+        ("connection to server failed: Network is unreachable", "IPv6"),
+        ("connection timeout expired", "paused"),
+        ("something unexpected", "app logs"),
+    ],
+)
+def test_connection_failures_get_actionable_advice(driver_message, advice) -> None:
+    assert advice in describe_connection_error(Exception(driver_message))
+
+
+def test_unreachable_or_malformed_database_raises_storage_unavailable() -> None:
+    with pytest.raises(StorageUnavailable) as refused:
+        ShareServer(database_url="postgresql://user:secret-pw@127.0.0.1:1/db")
+    assert "secret-pw" not in refused.value.hint
+    with pytest.raises(StorageUnavailable, match="not a valid connection string"):
+        ShareServer(database_url="not a url")

@@ -6,6 +6,7 @@ is encrypted or stored on a server in this demo.
 """
 
 import os
+import sys
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO
@@ -21,7 +22,7 @@ from PIL import Image
 from labtrail_algorithms import find_duplicate_observation_groups, partition_review_queue
 from labtrail_extraction import extract_document_ocr_line_candidates
 from labtrail_redaction import rasterize_pdf_page, redact_source_page
-from labtrail_sharing import AccessDenied, ShareDecryptionError, ShareServer, b64url, open_share, send_share, unb64url
+from labtrail_sharing import AccessDenied, ShareDecryptionError, ShareServer, StorageUnavailable, b64url, open_share, send_share, unb64url
 from labtrail_vault import MIN_PASSPHRASE_LENGTH, VaultError, decrypt_record, encrypt_record
 from labtrail_workflow import (
     ANALYTE_LABELS,
@@ -563,10 +564,20 @@ def _cached_server(database_url: str | None, server_dir: str | None) -> ShareSer
 
 
 def _server() -> ShareServer:
+    """The grant service, or a clear message and a stop if its database is unreachable.
+
+    Only the Share page and the recipient view need it, so the rest of the app keeps
+    working. A failed connection is not cached; the next interaction retries.
+    """
     # On Streamlit Community Cloud, top-level secrets are also environment variables.
-    return _cached_server(
-        os.environ.get("LABTRAIL_DATABASE_URL"), os.environ.get("LABTRAIL_SERVER_DIR")
-    )
+    try:
+        return _cached_server(
+            os.environ.get("LABTRAIL_DATABASE_URL"), os.environ.get("LABTRAIL_SERVER_DIR")
+        )
+    except StorageUnavailable as problem:
+        print(f"LabTrail share database unavailable: {problem.__cause__!r}", file=sys.stderr)
+        st.error(f"**Sharing is unavailable: the share database could not be reached.** {problem.hint}")
+        st.stop()
 
 
 def _base_url() -> str:
