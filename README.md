@@ -101,7 +101,7 @@ LabTrail turns that folder of PDFs into one longitudinal record that the patient
 | Area | What the prototype does |
 | :--- | :--- |
 | 📄 **Import** | PDF, PNG, and JPEG uploads. Native PDFs are read from their embedded text layer; scans and photos are read with OCR (deskew, lighting correction, upscaling). |
-| 🪪 **Identity check** | Suggests the lab, collection date, and printed patient name; the patient confirms the report is theirs before review. |
+| 🪪 **Identity check** | Suggests the lab, collection date, and printed patient name; patients can verify each printed name individually or confirm all uploaded labs belong to them. |
 | ✅ **Review** | Each extracted row is shown beside its source crop for accept, correct, or reject. Identification lines (name, DOB, MRN, address) are rejected automatically and can be restored. |
 | 🧬 **Test catalog** | 191 tests from a versioned reference table, with OCR-tolerant name matching; patients can add missing test names to their own list. |
 | 📈 **Timeline** | One chart per test across labs, using versioned unit rules (e.g. glucose mmol/L → mg/dL), comparability markers, and dated context notes. Unconvertible and text results are listed, never guessed. |
@@ -248,8 +248,9 @@ https://github.com/user-attachments/assets/aaee10de-607d-4196-93d9-17bcaa1f2155
 A full pass takes about five minutes using the three built-in synthetic reports from three
 fictional labs.
 
-1. **Upload.** Click **Load 3 synthetic sample reports**. For each report, check the lab and
-   collection date, tick *This name refers to me*, and **Confirm report**.
+1. **Upload.** Click **Load 3 synthetic sample reports**. Choose whether to confirm each
+   printed name individually or confirm that all the labs belong to you. For each report,
+   check the lab and collection date, then click **Confirm report**.
 2. **Review.** Accept each result shown beside its source crop (try correcting one value
    first). Reject the remaining header lines in bulk. Name and date lines were already
    rejected for you; open that list to see them or restore one. Optionally confirm each page

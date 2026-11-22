@@ -164,6 +164,24 @@ def page_upload() -> None:
         "Check what LabTrail read from each report. You must confirm the report is yours "
         "before its results can be reviewed."
     )
+    identity_mode = st.selectbox(
+        "Do you want to confirm all the labs belong to you or do you want to confirm "
+        "the name associated with each individual lab?",
+        [
+            "Confirm the name associated with each individual lab",
+            "Confirm all labs belong to me",
+        ],
+        key="identity-confirmation-mode",
+    )
+    confirm_names_individually = (
+        identity_mode == "Confirm the name associated with each individual lab"
+    )
+    if not confirm_names_individually:
+        st.caption(
+            "You will still confirm each report's laboratory and collection date, but LabTrail "
+            "will not ask you to verify the printed name on each report."
+        )
+
     for report_id, report in pending:
         s = report["suggestion"]
         with st.container(border=True):
@@ -179,10 +197,12 @@ def page_upload() -> None:
                     printed_name = s.patient_name or "(no name found)"
                     known = (lab, printed_name) in ss.confirmed_identities
                     st.write(f"Name printed on report: **{printed_name}**")
-                    mine = st.checkbox(
-                        "This name refers to me" + (" (confirmed before for this lab)" if known else ""),
-                        value=known,
-                    )
+                    mine = True
+                    if confirm_names_individually:
+                        mine = st.checkbox(
+                            "This name refers to me" + (" (confirmed before for this lab)" if known else ""),
+                            value=known,
+                        )
                     if st.form_submit_button("Confirm report", type="primary"):
                         if not lab.strip():
                             st.error("Enter the laboratory name.")
@@ -190,8 +210,17 @@ def page_upload() -> None:
                             st.error("Confirm the name refers to you, or remove this report.")
                         else:
                             report["confirmed"] = {"lab": lab.strip(), "collected": collected}
-                            ss.confirmed_identities.add((lab.strip(), printed_name))
-                            _log(f"Confirmed {report['filename']} ({lab.strip()}, {collected})")
+                            if confirm_names_individually:
+                                ss.confirmed_identities.add((lab.strip(), printed_name))
+                            confirmation = (
+                                "name checked"
+                                if confirm_names_individually
+                                else "all labs confirmed as yours"
+                            )
+                            _log(
+                                f"Confirmed {report['filename']} ({lab.strip()}, {collected}; "
+                                f"{confirmation})"
+                            )
                             st.rerun()
 
 

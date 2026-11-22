@@ -170,6 +170,7 @@ sequenceDiagram
     UI->>X: extract_document_ocr_line_candidates()
     X-->>UI: candidates (all mandatory review), page inventory INCOMPLETE
     UI->>W: suggest_report_metadata()
+    UI-->>P: Choose all-labs confirmation or per-report name checks
     UI-->>P: Lab, date, printed name for confirmation
     P->>UI: Confirm report is mine
 
@@ -299,7 +300,7 @@ Status: **Built** works end to end in the demo; **Partial** works with the state
 | Req. | Summary | Status | Where | Tests |
 |---|---|---|---|---|
 | FR-01 | Upload PDF, PNG, JPEG | Built (25 MiB and pixel limits) | `app.ingest`, `extract_document_ocr_line_candidates` | extraction, smoke |
-| FR-02 | Register report metadata | Partial: suggested lab, collection date (ISO, day/month or month/day when unambiguous, month names), and printed name ("Patient Name:", "Name:", or "Mr./Mrs./Ms."), all confirmed by the patient; no report date, ordering clinician, or type | `suggest_report_metadata`, `parse_report_date`, Upload page | workflow, text layer |
+| FR-02 | Register report metadata | Partial: suggested lab, collection date (ISO, day/month or month/day when unambiguous, month names), and printed name ("Patient Name:", "Name:", or "Mr./Mrs./Ms."); patients confirm each printed name individually or confirm that all labs belong to them; no report date, ordering clinician, or type | `suggest_report_metadata`, `parse_report_date`, Upload page | workflow, text layer, smoke |
 | FR-03 | Extract candidate rows with location | Partial: analyte, value, unit, range, flag, page, box, from the PDF text layer when present; no specimen type | `labtrail_extraction` | extraction, text layer, benchmark |
 | FR-04 | Map analytes to codes | Partial: 191 tests from the versioned table `reference/lab_tests.csv` suggested from printed names, abbreviations, and OCR look-alikes (ambiguous names are never guessed); patient chooses, or enters a new test name that is kept in their encrypted record and suggested on later uploads; internal codes, not LOINC | `suggest_analyte_code`, `load_analyte_table`, `add_custom_analyte` | workflow, smoke |
 | FR-05 | Deterministic unit outcomes | Built: unit rules for glucose and lipids; other tests are charted as reported only when every result shares one unit; text results ("Negative", "<0.5") are kept as printed and listed | `normalize_value`, `CONVERSION_FACTORS`, `plan_chart` | algorithms, workflow |

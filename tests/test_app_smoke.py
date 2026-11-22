@@ -168,6 +168,25 @@ def test_encrypted_record_round_trip_through_the_ui() -> None:
     assert sum(r["confirmed"] is not None for r in record["reports"].values()) == 1
 
 
+def test_patient_can_confirm_all_labs_without_individual_name_checks() -> None:
+    at = AppTest.from_file("../app.py", default_timeout=120)
+    at.run()
+    _click(at, "Load 3 synthetic sample reports")
+
+    mode = next(s for s in at.selectbox if s.key == "identity-confirmation-mode")
+    mode.set_value("Confirm all labs belong to me")
+    at.run()
+    assert not at.checkbox
+    assert any("will not ask you to verify the printed name" in c.value for c in at.caption)
+
+    for _ in range(3):
+        _click(at, "Confirm report")
+
+    assert all(r["confirmed"] for r in at.session_state["reports"].values())
+    assert not at.session_state["confirmed_identities"]
+    assert not at.exception
+
+
 def test_patient_can_add_a_test_name_that_persists(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LABTRAIL_SERVER_DIR", str(tmp_path))
     at = AppTest.from_file("../app.py", default_timeout=120)
